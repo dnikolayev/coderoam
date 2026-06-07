@@ -181,6 +181,7 @@ Reusable client instructions live in:
 - `docs/agents/gemini.md`
 - `docs/agents/opencode.md`
 - `docs/agents/generic.md`
+- `skills/whatsapp-relay/`
 
 Claude Code is supported through `claude-runner`:
 

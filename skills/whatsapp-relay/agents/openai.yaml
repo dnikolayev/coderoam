@@ -1,0 +1,7 @@
+interface:
+  display_name: "WhatsApp Relay"
+  short_description: "Use chat-bridge active inbox safely"
+  default_prompt: "Use $whatsapp-relay to check, drain, watch, or notify through the local WhatsApp chat-bridge relay."
+
+policy:
+  allow_implicit_invocation: true
