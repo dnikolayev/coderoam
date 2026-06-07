@@ -1,0 +1,33 @@
+# Build outputs
+bin/
+dist/
+release/
+*.exe
+*.test
+*.out
+
+# Local app/profile data
+chat-bridge.sqlite3
+whatsapp-session.sqlite3
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.qr.png
+
+# Logs and diagnostics
+*.log
+logs/
+diagnostics/
+*.redacted.json
+
+# OS/editor files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.tmp
+
+# Environment overrides
+.env
+.env.*
+!.env.example
