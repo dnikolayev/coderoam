@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security reports
+    url: https://github.com/endurantdevs/codex-whatsapp/security/policy
+    about: Do not open public issues for vulnerabilities. See SECURITY.md.

@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest a local-first feature.
+title: "feature: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Requests for bulk messaging, scraping, stealth monitoring, anti-ban behavior, or hosted consumer-account automation are out of scope.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What local/personal workflow should this improve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the behavior, defaults, and safety controls.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety and privacy impact
+      description: How does this preserve allowlisting, consent, local-first operation, and low-volume use?
+    validations:
+      required: true
