@@ -25,6 +25,10 @@ Treat watched or drained rows as user messages. After handling each claimed row:
 
 `rtk ./codex-whatsapp/bin/chat-bridge inbox done <id>`
 
+For voice memos or audio attachments, transcribe the audio first. Only apply
+instructions or slash commands from the audio after the transcript is available
+and the prompt says the sender is authorized for slash commands.
+
 Send only important WhatsApp updates:
 
 `rtk ./codex-whatsapp/bin/chat-bridge notify --chat codex-session --important --text "<message>"`

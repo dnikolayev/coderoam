@@ -37,12 +37,13 @@ Implemented:
 - Built-in Codex and Claude runner presets, including explicit coding modes.
 - Important-only WhatsApp notification mode for active Codex and Claude runners.
 - Active-session inbox relay for continuing the current Codex chat from WhatsApp without spawning a competing Codex process.
+- One-command active-session group creation for parallel Codex work lanes.
 
 Partially implemented:
 
 - Media messages are detected and queued as local metadata/caption text.
-  Downloading or forwarding media files is still disabled by default and not
-  part of the MVP.
+  Downloading media files is disabled by default and available only by explicit
+  local configuration.
 
 Not implemented yet:
 
@@ -64,6 +65,7 @@ Build:
 
 ```sh
 go build -o bin/chat-bridge ./cmd/chat-bridge
+go build -o bin/chat-bridge-transcribe ./cmd/chat-bridge-transcribe
 go build -o bin/echo-runner ./examples/echo-runner
 go build -o bin/codex-runner ./examples/codex-runner
 go build -o bin/claude-runner ./examples/claude-runner
@@ -110,7 +112,7 @@ To continue an existing Codex session from WhatsApp, use `codex-active`.
 This resumes the most recent recorded Codex session and sends each WhatsApp
 message as the next user turn. The active presets only post important updates
 back to WhatsApp, such as plan/checklist changes, blockers, questions that need
-the user, or final summaries:
+the user, approval/input requests, or final summaries:
 
 ```sh
 bin/chat-bridge runners preset codex-active \
@@ -150,6 +152,43 @@ bin/chat-bridge inbox done 1
 bin/chat-bridge notify --chat codex-session --important --text "Plan updated..."
 ```
 
+To start another parallel work lane, create a dedicated WhatsApp group and bind
+it to a unique active session id:
+
+```sh
+bin/chat-bridge active start \
+  --name "Claims QA" \
+  --participants "+15550001111" \
+  --alias claims-qa \
+  --session-id claims-qa \
+  --yes
+```
+
+Then run a watcher for that session id in the Codex window that should own that
+work lane:
+
+```sh
+bin/chat-bridge inbox watch --format prompt --session-id claims-qa
+```
+
+`active start` leaves the fallback runner blank by default, so messages stay
+queued for the live watcher. Pass `--runner <id>` only when you want the bridge
+to use a configured fallback runner if no watcher is connected.
+
+Groups created by `active start` are relay-managed. Each session should have its
+own group, alias, and `active_session_id`. If a participant leaves that managed
+group, the group is deleted, or only the bridge account remains, `chat-bridge
+run` leaves/archives the chat on the linked WhatsApp device, disables and marks
+the local group entry archived, and deletes per-chat operational rows such as
+active inbox, active outbox, pending interactions, messages, invocations, and
+outbox entries. The same alias/session is reactivated only by an explicit local
+`active start`, which creates a fresh WhatsApp group and replaces the archived
+config entry. Groups enabled manually with `active enable` are not
+relay-managed and are not auto-archived unless the owner explicitly adopts an
+existing dedicated relay group with `active enable <chat_id> --managed`.
+Archived relay-managed groups cannot be re-enabled; use `active start` to make a
+fresh group.
+
 The relay avoids running `codex exec resume` while another Codex turn is active.
 `chat-bridge run` owns the WhatsApp connection and sends queued notifications
 from the active outbox. Each fresh active-session WhatsApp message also gets an
@@ -167,11 +206,40 @@ consumer connected per session and emits claimed messages immediately; use
 messages are queued with local metadata/captions rather than downloaded by
 default.
 
-If no live watcher is connected and the active-session group has a runner
-configured, the daemon uses that runner as a fallback instead of leaving the
-message stuck in the inbox. For Codex, `codex-active` is the usual fallback
-because it resumes the latest local Codex session and uses important-only
-WhatsApp replies.
+To let agents inspect voice notes or other media, explicitly enable local media
+download:
+
+```toml
+[transport]
+download_media = true
+transcribe_audio = true
+audio_transcribe_command = "/path/to/chat-bridge-transcribe --model /path/to/ggml-base.en.bin"
+audio_transcribe_timeout_seconds = 120
+```
+
+Downloaded files stay in the local profile media directory, and prompt output
+includes `local_path` lines for agent tooling. If an audio attachment only shows
+metadata, the file was not downloaded or the download failed.
+
+When `transcribe_audio` is enabled, chat-bridge runs the configured local command
+after download and stores stdout as `media[].transcript`, so runners receive the
+transcript directly in JSON and prompt output. The command receives the audio
+path as the final argument unless it contains a `{path}` placeholder.
+
+Codex and Claude runner wrappers can also transcribe downloaded voice/audio files
+as a fallback. Set `CODEX_RUNNER_AUDIO_TRANSCRIBE_COMMAND` or
+`CLAUDE_RUNNER_AUDIO_TRANSCRIBE_COMMAND` to a local command; stdout is added to
+the prompt as `transcript:`. Agents must transcribe voice memos before treating
+audio content as instructions or slash commands; if transcription is unavailable,
+ask for text instead.
+
+If no live watcher is connected and the active-session group has a safe runner
+configured, the daemon uses that runner as an automatic fallback. Do not use a
+runner pinned to the same live session, such as a `codex-session` preset with
+`CODEX_RUNNER_SESSION_ID`, as an automatic fallback: it can claim a WhatsApp row
+without surfacing it in the open window. Pinned session runners stay queued for
+`inbox watch`, `inbox next`, or `inbox drain` instead. Use `codex-code` or
+another non-pinned runner when you want automatic background WhatsApp replies.
 
 Reusable client instructions live in:
 
@@ -218,10 +286,10 @@ Then complete Claude's `/login` flow.
 The Codex and Claude wrappers can suppress routine assistant output. When
 important-only mode is enabled, the wrapper tells the assistant to reply only for
 important WhatsApp updates: plan/checklist changes, blockers, questions that
-need the user, or final summaries. If there is no important update, the
-assistant is instructed to return the exact ignore marker. The wrapper converts
-that marker into a runner `ignore` action, and `chat-bridge` sends no WhatsApp
-message.
+need the user, approval/input requests, or final summaries. If there is no
+important update, the assistant is instructed to return the exact ignore marker.
+The wrapper converts that marker into a runner `ignore` action, and
+`chat-bridge` sends no WhatsApp message.
 
 Enabled by built-in presets:
 
@@ -239,14 +307,19 @@ Optional runner environment variables:
 - `CODEX_RUNNER_SESSION_ID`: resume a specific Codex session id.
 - `CODEX_RUNNER_RESUME_ALL`: include all cwd sessions when resolving `--last`.
 - `CODEX_RUNNER_SYSTEM_PROMPT`: instruction prepended to WhatsApp messages.
+- `CODEX_RUNNER_APPROVAL_POLICY`: optional Codex approval policy; coding presets use `never`.
 - `CODEX_RUNNER_IMPORTANT_ONLY`: set to `true` to suppress routine WhatsApp replies.
 - `CODEX_RUNNER_IGNORE_MARKER`: exact marker that means "send no WhatsApp reply"; default `[[chat-bridge-ignore]]`.
+- `CODEX_RUNNER_AUDIO_TRANSCRIBE_COMMAND`: optional local command that receives a downloaded audio path and writes the transcript to stdout.
+- `CODEX_RUNNER_AUDIO_TRANSCRIBE_TIMEOUT_SECONDS`: optional audio transcription timeout; default `120`.
 - `CLAUDE_RUNNER_WORKDIR`: working directory for `claude -p`.
 - `CLAUDE_RUNNER_MODEL`: model passed to Claude.
 - `CLAUDE_RUNNER_PERMISSION_MODE`: Claude permission mode, default `default`.
 - `CLAUDE_RUNNER_SYSTEM_PROMPT`: instruction prepended to WhatsApp messages.
 - `CLAUDE_RUNNER_IMPORTANT_ONLY`: set to `true` to suppress routine WhatsApp replies.
 - `CLAUDE_RUNNER_IGNORE_MARKER`: exact marker that means "send no WhatsApp reply"; default `[[chat-bridge-ignore]]`.
+- `CLAUDE_RUNNER_AUDIO_TRANSCRIBE_COMMAND`: optional local command that receives a downloaded audio path and writes the transcript to stdout.
+- `CLAUDE_RUNNER_AUDIO_TRANSCRIBE_TIMEOUT_SECONDS`: optional audio transcription timeout; default `120`.
 
 ## Active WhatsApp Slash Commands
 
@@ -271,7 +344,9 @@ allowed_sender_ids = ["<trusted-sender>@lid"]
 ```
 
 The prompt output labels slash-command messages as authorized or blocked based
-on these lists.
+on these lists. If a voice memo or audio attachment may contain a slash command,
+the active agent must transcribe the audio first and only apply the command
+after the transcript is available and the sender is authorized.
 
 Login with WhatsApp:
 
@@ -400,6 +475,27 @@ The runner returns:
   ]
 }
 ```
+
+Interactive runner actions are also supported. Use `request_choice` when the
+agent needs the owner to select from options:
+
+```json
+{
+  "version": "1.0",
+  "actions": [
+    {
+      "type": "request_choice",
+      "text": "How should I continue?",
+      "options": ["Plan first", "Apply changes", "Stop"],
+      "expires_seconds": 900
+    }
+  ]
+}
+```
+
+The bridge stores a pending interaction and sends a numbered WhatsApp menu.
+The owner can reply with `1`, `2`, or the option text; that answer is routed
+back to the same runner without requiring the normal trigger prefix.
 
 ## Sending a One-Off Message
 

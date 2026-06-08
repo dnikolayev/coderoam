@@ -42,8 +42,10 @@ In the current MVP, media messages are detected and queued as local text
 metadata such as media type, MIME type, file name, size, and caption when
 available. Media files are not downloaded by default.
 
-If future media download support is enabled, media must stay local, use
-retention limits, and be exposed to runners only by explicit configuration.
+When media download is explicitly enabled with `transport.download_media = true`,
+downloaded files stay local under the profile media directory. Runner and active
+inbox prompts may include `local_path` values so local agents can inspect or
+transcribe the files. Keep retention limits appropriate for that profile.
 
 ## Deleting Data
 

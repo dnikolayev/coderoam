@@ -20,6 +20,10 @@ At the start of every Codex turn:
 5. After handling each claimed inbox item:
    `rtk ./codex-whatsapp/bin/chat-bridge inbox done <id>`
 
+For voice memos or audio attachments, transcribe the audio first. Only apply
+instructions or slash commands from the audio after the transcript is available
+and the prompt says the sender is authorized for slash commands.
+
 When this turn itself was delivered by a `chat-bridge` runner prompt containing
 `Sender`, `Chat`, and `Message`, treat that message as already claimed by the
 daemon. Do not mark it done manually unless you claimed another inbox row.

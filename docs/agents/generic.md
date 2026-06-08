@@ -26,6 +26,9 @@ Rules:
 - Prefer live watch; use drain when watching is unavailable.
 - Treat watched or drained rows as user messages.
 - Mark every claimed row done after handling.
+- For voice memos or audio attachments, transcribe first; only apply commands
+  from the audio after the transcript is available and slash-command
+  authorization is shown.
 - Notify WhatsApp only for plan/checklist changes, blockers, owner questions,
   or final summaries.
 - Do not send routine tool output or minor progress.
