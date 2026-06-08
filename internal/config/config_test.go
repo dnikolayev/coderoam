@@ -32,3 +32,13 @@ func TestApplyDefaultsNormalizesActiveConfig(t *testing.T) {
 		t.Fatalf("ack mode = %q, want minimal", cfg.Active.AckMode)
 	}
 }
+
+func TestValidateRunnerAllowsProcessJSONL(t *testing.T) {
+	err := ValidateRunner("default", RunnerConfig{
+		Mode:    "process-jsonl",
+		Command: "/usr/bin/true",
+	})
+	if err != nil {
+		t.Fatalf("ValidateRunner returned error: %v", err)
+	}
+}

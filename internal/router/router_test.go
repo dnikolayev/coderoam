@@ -3,6 +3,7 @@ package router
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -73,6 +74,49 @@ func TestRouterProcessesAllowedTriggeredMessageAndDedupes(t *testing.T) {
 	}
 	if len(ft.Read) != 1 {
 		t.Fatalf("duplicate read receipt count = %d, want 1", len(ft.Read))
+	}
+}
+
+func TestRouterReusesProcessJSONLRunnerPerChatSession(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Runner["default"] = config.RunnerConfig{
+		Mode:    "process-jsonl",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "jsonl"},
+		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+	}
+	cfg.Groups = []config.GroupConfig{{ID: "1203630test@g.us", Alias: "test", Runner: "default", Enabled: true}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	t.Cleanup(func() {
+		_ = r.Stop(t.Context())
+	})
+	for i, text := range []string{"one", "two"} {
+		result := r.Handle(t.Context(), types.IncomingMessage{
+			ID:        fmt.Sprintf("msg-jsonl-%d", i+1),
+			ChatID:    "1203630test@g.us",
+			ChatType:  types.ChatTypeGroup,
+			SenderID:  "sender@s.whatsapp.net",
+			Text:      text,
+			RawText:   "@bridge " + text,
+			Timestamp: time.Now(),
+		})
+		if result.Ignored {
+			t.Fatalf("message %d ignored: %s", i+1, result.Reason)
+		}
+	}
+	if len(ft.Sent) != 2 {
+		t.Fatalf("sent count = %d", len(ft.Sent))
+	}
+	if ft.Sent[0].Text != "jsonl 1: one" || ft.Sent[1].Text != "jsonl 2: two" {
+		t.Fatalf("sent replies = %+v", ft.Sent)
 	}
 }
 
@@ -1177,6 +1221,24 @@ func waitForRouterCondition(t *testing.T, timeout time.Duration, ok func() bool)
 func TestRouterHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_ROUTER_HELPER_PROCESS") != "1" {
 		return
+	}
+	mode := os.Args[len(os.Args)-1]
+	if mode == "jsonl" {
+		decoder := json.NewDecoder(os.Stdin)
+		encoder := json.NewEncoder(os.Stdout)
+		count := 0
+		for {
+			var req runner.Request
+			if err := decoder.Decode(&req); err != nil {
+				os.Exit(0)
+			}
+			count++
+			_ = encoder.Encode(runner.Response{
+				Version:   runner.ProtocolVersion,
+				RequestID: req.RequestID,
+				Actions:   []runner.Action{{Type: "reply", Text: fmt.Sprintf("jsonl %d: %s", count, req.Text)}},
+			})
+		}
 	}
 	body, _ := io.ReadAll(os.Stdin)
 	var req runner.Request

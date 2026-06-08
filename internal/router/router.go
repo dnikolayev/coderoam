@@ -22,6 +22,7 @@ type Router struct {
 	transport               transport.ChatTransport
 	mu                      sync.Mutex
 	groupMu                 map[string]*sync.Mutex
+	runnerCache             map[string]runner.Runner
 	activeFallbackDelay     time.Duration
 	activeFallbackLimit     int
 	activeFallbackScheduled map[string]bool
@@ -44,6 +45,7 @@ func New(cfg config.Config, store *db.Store, chatTransport transport.ChatTranspo
 		store:                   store,
 		transport:               chatTransport,
 		groupMu:                 map[string]*sync.Mutex{},
+		runnerCache:             map[string]runner.Runner{},
 		activeFallbackDelay:     time.Duration(cfg.Active.FallbackDelaySeconds) * time.Second,
 		activeFallbackLimit:     cfg.Active.FallbackBatchLimit,
 		activeFallbackScheduled: map[string]bool{},
@@ -52,8 +54,19 @@ func New(cfg config.Config, store *db.Store, chatTransport transport.ChatTranspo
 
 func (r *Router) SetConfig(cfg config.Config) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.cfg = cfg
+	cached := r.runnerCache
+	r.runnerCache = map[string]runner.Runner{}
+	r.mu.Unlock()
+	stopRunners(context.Background(), cached)
+}
+
+func (r *Router) Stop(ctx context.Context) error {
+	r.mu.Lock()
+	cached := r.runnerCache
+	r.runnerCache = map[string]runner.Runner{}
+	r.mu.Unlock()
+	return stopRunners(ctx, cached)
 }
 
 func (r *Router) Handle(ctx context.Context, msg types.IncomingMessage) ProcessResult {
@@ -235,7 +248,7 @@ func (r *Router) invokeRunnerAndSend(ctx context.Context, msg types.IncomingMess
 
 	req := r.buildRequest(msg, group, runnerID, text, trigger)
 	requestJSON, _ := json.Marshal(req)
-	processRunner := runner.NewProcessRunner(runnerCfg, r.cfg.RateLimits.MaxRunnerSeconds)
+	processRunner := r.runnerFor(msg.ChatID, runnerID, runnerCfg)
 	runResult, runErr := processRunner.Invoke(ctx, req)
 	responseJSON, _ := json.Marshal(runResult.Response)
 	invocationStatus := "ok"
@@ -459,6 +472,34 @@ func (r *Router) activeSessionFallbackAllowed(runnerID string) bool {
 		return false
 	}
 	return strings.TrimSpace(cfg.Command) != ""
+}
+
+func (r *Router) runnerFor(chatID, runnerID string, runnerCfg config.RunnerConfig) runner.Runner {
+	if runnerCfg.Mode != "process-jsonl" {
+		return runner.NewProcessRunner(runnerCfg, r.cfg.RateLimits.MaxRunnerSeconds)
+	}
+	key := strings.Join([]string{r.cfg.App.Profile, chatID, runnerID}, "\x00")
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.runnerCache == nil {
+		r.runnerCache = map[string]runner.Runner{}
+	}
+	if cached, ok := r.runnerCache[key]; ok {
+		return cached
+	}
+	cached := runner.NewProcessRunner(runnerCfg, r.cfg.RateLimits.MaxRunnerSeconds)
+	r.runnerCache[key] = cached
+	return cached
+}
+
+func stopRunners(ctx context.Context, runners map[string]runner.Runner) error {
+	var firstErr error
+	for _, item := range runners {
+		if err := item.Stop(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func (r *Router) isRecentOutboxEcho(ctx context.Context, msg types.IncomingMessage) bool {

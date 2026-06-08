@@ -43,6 +43,8 @@ type AppConfig struct {
 type TransportConfig struct {
 	Type                          string `toml:"type"`
 	LoginMethod                   string `toml:"login_method"`
+	BotToken                      string `toml:"bot_token"`
+	AppToken                      string `toml:"app_token"`
 	DownloadMedia                 bool   `toml:"download_media"`
 	TranscribeAudio               bool   `toml:"transcribe_audio"`
 	AudioTranscribeCommand        string `toml:"audio_transcribe_command"`
@@ -489,7 +491,7 @@ func ValidateRunner(id string, runner RunnerConfig) error {
 		return fmt.Errorf("runner %q command is required", id)
 	}
 	switch runner.Mode {
-	case "process-once-text", "process-once-json":
+	case "process-once-text", "process-once-json", "process-jsonl":
 		return nil
 	default:
 		return fmt.Errorf("unsupported runner mode %q", runner.Mode)
