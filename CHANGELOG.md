@@ -27,6 +27,8 @@ protocols.
   live watcher is connected.
 - Shared relay instructions for Codex, Claude, Gemini, OpenCode, and generic
   local agent clients.
+- Release workflow for native platform archives, checksums, CycloneDX SBOM, and
+  a generated Homebrew-core candidate formula.
 
 ### Changed
 

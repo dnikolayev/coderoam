@@ -33,6 +33,7 @@ Implemented:
 - Group allowlisting.
 - Prefix trigger, default `@bridge`.
 - Process-once text and process-once JSON runners.
+- Persistent JSONL runners.
 - SQLite persistence for profiles, chats, senders, messages, runner invocations, outbox, and audit events.
 - Incoming message deduplication by WhatsApp message ID.
 - Fake transport and `test-route` for local testing without WhatsApp.
@@ -43,6 +44,10 @@ Implemented:
 - Important-only WhatsApp notification mode for active Codex and Claude runners.
 - Active-session inbox relay for continuing the current Codex chat from WhatsApp without spawning a competing Codex process.
 - One-command active-session group creation for parallel Codex work lanes.
+- Local approval/input queue commands.
+- Cross-platform active-session watcher service definitions.
+- Tagged-release workflow with checksums, SBOM, and optional macOS signing/notarization secrets.
+- Reserved Telegram, Slack, and Google Chat transport names with explicit not-yet-implemented status/errors.
 
 Partially implemented:
 
@@ -53,10 +58,9 @@ Partially implemented:
 Not implemented yet:
 
 - Participant management beyond create/invite flows.
-- Persistent JSONL runners.
-- Approval queue.
 - Encrypted session storage integration with Keychain/libsecret/DPAPI.
-- Signed release packaging.
+- Full Telegram, Slack, and Google Chat message adapters.
+- Homebrew core submission.
 
 ## Quick Start
 
@@ -85,7 +89,8 @@ brew install --HEAD dnikolayev/coderoam/coderoam
 coderoam setup
 ```
 
-See [docs/HOMEBREW.md](docs/HOMEBREW.md) for formula notes.
+See [docs/HOMEBREW.md](docs/HOMEBREW.md) for the tap fallback, release
+workflow, and Homebrew-core formula path.
 
 Initialize local config:
 
@@ -556,6 +561,26 @@ The runner returns:
 }
 ```
 
+For persistent agents, use `process-jsonl`. The bridge starts the configured
+command once per chat/session, sends one request JSON object per line, and reads
+one response JSON object per line:
+
+```toml
+[runner.default]
+mode = "process-jsonl"
+command = "/usr/local/bin/my-chat-cli"
+args = ["--stdio"]
+restart_on_crash = true
+max_restarts_per_hour = 10
+```
+
+The response can be the same structured response shown above, or a compact JSONL
+event such as:
+
+```json
+{"type":"reply","request_id":"req_...","text":"pong"}
+```
+
 Interactive runner actions are also supported. Use `request_choice` when the
 agent needs the owner to select from options:
 
@@ -578,6 +603,15 @@ The owner can reply with `1`, `2`, the option text, or clear natural language
 such as `privacy review` or `CI please`; that answer is routed back to the same
 runner without requiring the normal trigger prefix. If the answer matches more
 than one option, the bridge asks a narrower follow-up instead of guessing.
+
+Local approval controls:
+
+```sh
+bin/coderoam approvals list
+bin/coderoam approvals show <id>
+bin/coderoam approvals approve <id>
+bin/coderoam approvals reject <id>
+```
 
 ## Sending a One-Off Message
 

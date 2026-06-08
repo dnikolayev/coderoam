@@ -2,9 +2,13 @@
 
 coderoam is a CLI app, so Homebrew packaging uses a formula.
 
-The formula in this repository is a tap-ready `--HEAD` formula. It lets early
-users install from the current `main` branch while the project is still before a
-tagged stable release.
+There are two Homebrew paths:
+
+- The checked-in `Formula/coderoam.rb` is the tap fallback. It installs from
+  `HEAD` while the project is moving quickly.
+- Tagged releases generate a source-built Homebrew-core candidate formula from
+  `.github/homebrew-core/coderoam.rb.template`. The generated formula includes
+  the real release tarball `sha256`.
 
 ## Install From This Repository Tap
 
@@ -49,17 +53,42 @@ Read the full setup guide in [SETUP.md](SETUP.md).
 ## Homebrew Core Readiness
 
 Homebrew core expects new formulae to have a stable, tagged version and pass the
-formula audit. Before submitting coderoam to `Homebrew/homebrew-core`:
-
-1. Create a stable GitHub release, for example `v0.1.0`.
-2. Replace the `head`-only formula with a stable `url` and `sha256`.
-3. Run the checks from the tap:
+formula audit. For `v0.1.0`, create and push the tag only after release preflight
+passes:
 
 ```sh
-brew audit --strict --new --online --formula dnikolayev/coderoam/coderoam
-brew install --build-from-source dnikolayev/coderoam/coderoam
-brew test dnikolayev/coderoam/coderoam
+git tag -a v0.1.0 -m "coderoam v0.1.0"
+git push origin v0.1.0
 ```
 
-The current formula intentionally keeps the early install path in a tap until
-that stable release exists.
+The `Release` workflow will upload:
+
+- platform archives
+- `checksums.txt`
+- `coderoam_<version>_sbom.cdx.json`
+- `coderoam_<version>_source.tar.gz`
+- `coderoam-homebrew-core.rb`
+
+Validate the generated core formula from a local throwaway tap:
+
+```sh
+brew tap-new local/coderoam-core
+cp coderoam-homebrew-core.rb "$(brew --repository local/coderoam-core)/Formula/coderoam.rb"
+brew audit --strict --new --online local/coderoam-core/coderoam
+brew install --build-from-source local/coderoam-core/coderoam
+brew test local/coderoam-core/coderoam
+brew uninstall local/coderoam-core/coderoam
+brew untap local/coderoam-core
+```
+
+For Homebrew core submission, copy the generated formula into the
+`Homebrew/homebrew-core` formula tree and rerun:
+
+```sh
+brew audit --strict --new --online coderoam
+brew install --build-from-source coderoam
+brew test coderoam
+```
+
+If Homebrew-core acceptability fails because the project is still too new or too
+niche, keep using the repository tap and revisit core after adoption grows.

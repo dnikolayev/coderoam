@@ -1,0 +1,289 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version label for a dry-run build, for example v0.1.0
+        required: false
+        default: v0.1.0
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin_arm64
+            runner: macos-15
+            archive: tar.gz
+            ext: ""
+          - target: darwin_amd64
+            runner: macos-15-intel
+            archive: tar.gz
+            ext: ""
+          - target: linux_amd64
+            runner: ubuntu-24.04
+            archive: tar.gz
+            ext: ""
+          - target: linux_arm64
+            runner: ubuntu-24.04-arm
+            archive: tar.gz
+            ext: ""
+          - target: windows_amd64
+            runner: windows-latest
+            archive: zip
+            ext: ".exe"
+
+    env:
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      DISPATCH_VERSION: ${{ inputs.version }}
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Windows C compiler
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          path-type: inherit
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc
+
+      - name: Build binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
+            version="${DISPATCH_VERSION:-v0.1.0}"
+          fi
+          clean_version="${version#v}"
+          commit="$(git rev-parse --short=12 HEAD)"
+          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          artifact_dir="dist/coderoam_${clean_version}_${{ matrix.target }}"
+          ext="${{ matrix.ext }}"
+
+          mkdir -p "${artifact_dir}"
+
+          ldflags="-s -w"
+          ldflags="${ldflags} -X github.com/dnikolayev/coderoam/internal/app.version=${clean_version}"
+          ldflags="${ldflags} -X github.com/dnikolayev/coderoam/internal/app.commit=${commit}"
+          ldflags="${ldflags} -X github.com/dnikolayev/coderoam/internal/app.date=${build_date}"
+
+          go build -trimpath -ldflags "${ldflags}" -o "${artifact_dir}/coderoam${ext}" ./cmd/coderoam
+          go build -trimpath -ldflags "${ldflags}" -o "${artifact_dir}/coderoam-transcribe${ext}" ./cmd/coderoam-transcribe
+          go build -trimpath -ldflags "${ldflags}" -o "${artifact_dir}/agent-runner${ext}" ./examples/agent-runner
+          go build -trimpath -ldflags "${ldflags}" -o "${artifact_dir}/codex-runner${ext}" ./examples/codex-runner
+          go build -trimpath -ldflags "${ldflags}" -o "${artifact_dir}/claude-runner${ext}" ./examples/claude-runner
+          go build -trimpath -ldflags "${ldflags}" -o "${artifact_dir}/echo-runner${ext}" ./examples/echo-runner
+
+          cp README.md LICENSE NOTICE THIRD_PARTY_LICENSES.md SECURITY.md PRIVACY.md "${artifact_dir}/"
+
+      - name: Import Apple signing certificate
+        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE_BASE64 != '' && env.APPLE_DEVELOPER_ID != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          keychain_path="${RUNNER_TEMP}/coderoam-signing.keychain-db"
+          cert_path="${RUNNER_TEMP}/developer-id.p12"
+          keychain_password="$(openssl rand -hex 24)"
+
+          echo "${APPLE_CERTIFICATE_BASE64}" | base64 --decode > "${cert_path}"
+          security create-keychain -p "${keychain_password}" "${keychain_path}"
+          security set-keychain-settings -lut 21600 "${keychain_path}"
+          security unlock-keychain -p "${keychain_password}" "${keychain_path}"
+          security import "${cert_path}" -P "${APPLE_CERTIFICATE_PASSWORD}" -A -t cert -f pkcs12 -k "${keychain_path}"
+          security list-keychains -d user -s "${keychain_path}" $(security list-keychains -d user | sed s/\"//g)
+          security set-key-partition-list -S apple-tool:,apple: -s -k "${keychain_password}" "${keychain_path}"
+
+      - name: Sign macOS binaries
+        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE_BASE64 != '' && env.APPLE_DEVELOPER_ID != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          artifact_dir="$(find dist -maxdepth 1 -type d -name 'coderoam_*_${{ matrix.target }}' -print -quit)"
+          for binary in "${artifact_dir}"/coderoam "${artifact_dir}"/coderoam-transcribe "${artifact_dir}"/*-runner; do
+            codesign --force --options runtime --timestamp --sign "${APPLE_DEVELOPER_ID}" "${binary}"
+            codesign --verify --strict --verbose=2 "${binary}"
+          done
+
+      - name: Notarize macOS binaries
+        if: runner.os == 'macOS' && env.APPLE_ID != '' && env.APPLE_APP_SPECIFIC_PASSWORD != '' && env.APPLE_TEAM_ID != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          artifact_dir="$(find dist -maxdepth 1 -type d -name 'coderoam_*_${{ matrix.target }}' -print -quit)"
+          artifact_name="$(basename "${artifact_dir}")"
+          notary_zip="dist/${artifact_name}-notary.zip"
+
+          ditto -c -k --keepParent "${artifact_dir}" "${notary_zip}"
+          xcrun notarytool submit "${notary_zip}" \
+            --apple-id "${APPLE_ID}" \
+            --password "${APPLE_APP_SPECIFIC_PASSWORD}" \
+            --team-id "${APPLE_TEAM_ID}" \
+            --wait
+          rm -f "${notary_zip}"
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          artifact_dir="$(find dist -maxdepth 1 -type d -name 'coderoam_*_${{ matrix.target }}' -print -quit)"
+          artifact_name="$(basename "${artifact_dir}")"
+
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            powershell -NoProfile -Command "Compress-Archive -Path '${artifact_dir}' -DestinationPath 'dist/${artifact_name}.zip' -Force"
+          else
+            tar -C dist -czf "dist/${artifact_name}.tar.gz" "${artifact_name}"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: coderoam-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+
+  sbom:
+    name: Generate SBOM
+    runs-on: ubuntu-24.04
+    env:
+      DISPATCH_VERSION: ${{ inputs.version }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Generate CycloneDX SBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
+            version="${DISPATCH_VERSION:-v0.1.0}"
+          fi
+          clean_version="${version#v}"
+
+          go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.9.0 mod \
+            -licenses \
+            -json \
+            -output "coderoam_${clean_version}_sbom.cdx.json"
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v7
+        with:
+          name: coderoam-sbom
+          path: coderoam_*_sbom.cdx.json
+          if-no-files-found: error
+
+  publish:
+    name: Publish release bundle
+    needs:
+      - build
+      - sbom
+    runs-on: ubuntu-24.04
+    env:
+      DISPATCH_VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist/downloaded
+
+      - name: Assemble release bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
+            version="${DISPATCH_VERSION:-v0.1.0}"
+          fi
+          clean_version="${version#v}"
+          release_dir="dist/release"
+
+          mkdir -p "${release_dir}"
+          find dist/downloaded -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*_sbom.cdx.json' \) -exec cp {} "${release_dir}/" \;
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            source_url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${version}.tar.gz"
+            curl -fsSL "${source_url}" -o "${release_dir}/coderoam_${clean_version}_source.tar.gz"
+            source_sha="$(shasum -a 256 "${release_dir}/coderoam_${clean_version}_source.tar.gz" | awk '{print $1}')"
+            sed \
+              -e "s/{{VERSION}}/${clean_version}/g" \
+              -e "s/{{SHA256}}/${source_sha}/g" \
+              .github/homebrew-core/coderoam.rb.template > "${release_dir}/coderoam-homebrew-core.rb"
+          fi
+
+          (
+            cd "${release_dir}"
+            shasum -a 256 * | sort -k2 > checksums.txt
+          )
+
+          cat > "${release_dir}/RELEASE_NOTES.md" <<EOF
+          coderoam ${version}
+
+          This is a local-first bridge for continuing selected coding-agent
+          sessions from mobile group chats.
+
+          Start after install with:
+
+            coderoam setup
+
+          WhatsApp support uses an unofficial linked-device transport. Use a
+          dedicated account and keep usage personal and low volume.
+          EOF
+
+      - name: Upload release bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: coderoam-release-bundle
+          path: dist/release/*
+          if-no-files-found: error
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" dist/release/* \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file dist/release/RELEASE_NOTES.md \
+            --verify-tag

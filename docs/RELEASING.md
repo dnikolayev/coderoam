@@ -11,8 +11,29 @@ checks pass.
 ```sh
 go mod tidy
 go test ./...
+go vet ./...
 go build -o bin/coderoam ./cmd/coderoam
 bin/coderoam doctor
+git diff --check
+```
+
+Generate release compliance artifacts from the exact release commit:
+
+```sh
+mkdir -p dist/compliance
+go list -m all > dist/compliance/go-modules.txt
+go run github.com/google/go-licenses@latest report ./... > dist/compliance/third-party-license-report.txt
+go run github.com/google/osv-scanner/v2/cmd/osv-scanner@latest --lockfile go.sum
+go run github.com/anchore/syft/cmd/syft@latest dir:. -o spdx-json=dist/compliance/coderoam.spdx.json
+```
+
+Block the release if the checked-in inventory still has unresolved rows:
+
+```sh
+if grep -n '| review |' THIRD_PARTY_LICENSES.md; then
+  echo "Resolve third-party license review rows before release." >&2
+  exit 1
+fi
 ```
 
 Check that:
@@ -21,8 +42,12 @@ Check that:
 - `docs/HOMEBREW.md` reflects the current formula/release path.
 - `CHANGELOG.md` has an entry for the release.
 - `LICENSE`, `NOTICE`, and `THIRD_PARTY_LICENSES.md` are included.
+- GPL/MPL dependency obligations have been reviewed against the release
+  artifact shape before publishing binaries.
 - No profile data, session databases, QR images, logs, or local config secrets
   are staged.
+- `coderoam doctor` reports no broad profile/session permissions for the
+  release test profile.
 - Real WhatsApp testing used only a dedicated test account and low-volume test
   group.
 
@@ -35,12 +60,54 @@ Check that:
 - `coderoam_<version>_windows_amd64.zip`
 - `checksums.txt`
 - SBOM or module license report
+- `coderoam-homebrew-core.rb`, after the tag exists
 
 ## macOS
 
 For public macOS releases, prefer signed and notarized artifacts. Unsigned test
 builds are acceptable only for development snapshots and should be labeled as
 such.
+
+The `Release` workflow signs macOS binaries when all of these secrets are
+configured:
+
+- `APPLE_CERTIFICATE_BASE64`
+- `APPLE_CERTIFICATE_PASSWORD`
+- `APPLE_DEVELOPER_ID`
+
+It submits the macOS binaries for notarization when these are also configured:
+
+- `APPLE_ID`
+- `APPLE_APP_SPECIFIC_PASSWORD`
+- `APPLE_TEAM_ID`
+
+If the secrets are missing, the release still builds unsigned archives.
+
+## GitHub Release Workflow
+
+Tag pushes matching `v*` run `.github/workflows/release.yml`. The workflow uses
+native GitHub-hosted runners instead of cgo cross-compilation:
+
+- `macos-15` for darwin arm64
+- `macos-15-intel` for darwin amd64
+- `ubuntu-24.04` for linux amd64
+- `ubuntu-24.04-arm` for linux arm64
+- `windows-latest` for windows amd64
+
+Each archive includes the user binaries, README, security/privacy docs, and
+license notices. The publish job combines archives, generates `checksums.txt`,
+creates a CycloneDX SBOM, downloads the tagged source tarball, and renders the
+Homebrew-core candidate formula with the real source `sha256`.
+
+Use manual dispatch for dry-run packaging before a tag:
+
+```sh
+gh workflow run release.yml -f version=v0.1.0
+```
+
+Manual dispatch does not create a GitHub release or a final Homebrew-core
+formula because the GitHub source tarball checksum exists only after the tag is
+published.
 
 ## Release Notes
 
