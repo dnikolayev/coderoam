@@ -25,6 +25,18 @@ rtk ./coderoam/bin/coderoam inbox done <id>
 rtk ./coderoam/bin/coderoam notify --chat codex-session --important --text "<message>"
 ```
 
+For a long-lived local session, install the watcher as a user service:
+
+```sh
+rtk ./coderoam/bin/coderoam service install --session-id codex-session --profile bot
+rtk ./coderoam/bin/coderoam service start --session-id codex-session --profile bot
+rtk ./coderoam/bin/coderoam service status --session-id codex-session --profile bot
+```
+
+The service runs the same watcher path with takeover and restart backoff. Add
+`--dry-run` to inspect the generated LaunchAgent, systemd unit, or Windows
+scheduled task command.
+
 Rules:
 
 - Prefer `inbox watch` if the client can keep a persistent process open and
@@ -119,6 +131,15 @@ route. In active-session mode, the selected answer is queued for the live client
 session. If a reply matches multiple options, the bridge asks a narrower
 follow-up instead of guessing. Native WhatsApp polls/buttons are optional future
 UI; text selectors remain the reliable fallback.
+
+The same queue is available locally:
+
+```sh
+coderoam approvals list
+coderoam approvals show <id>
+coderoam approvals approve <id>
+coderoam approvals reject <id>
+```
 
 ## Runner-Delivered Prompts
 

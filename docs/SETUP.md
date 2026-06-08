@@ -4,9 +4,9 @@ coderoam needs a connected messenger before an AI coding session can continue
 from mobile. Installing the CLI is not enough: you must link a messenger account
 and bind a chat to a local runner/session.
 
-WhatsApp is the implemented transport today. Telegram, Slack, Google Chat, and
-other messengers should be added as separate transports before they can receive
-session messages.
+WhatsApp is the implemented transport today. `telegram`, `slack`, and
+`google-chat` are reserved transport names that report clear setup/status errors
+until their adapters are implemented.
 
 ## Quick WhatsApp Setup
 
@@ -28,6 +28,18 @@ coderoam inbox watch --format prompt --session-id codex-session
 
 When someone sends a message in the session group, coderoam stores it in the
 session inbox. The watcher prints it for the active agent to handle.
+
+To keep that watcher alive across terminal restarts, install an OS user service:
+
+```sh
+coderoam service install --session-id codex-session --profile bot
+coderoam service start --session-id codex-session --profile bot
+coderoam service status --session-id codex-session --profile bot
+```
+
+Use `--dry-run` with any service command to inspect the generated LaunchAgent,
+systemd unit, or Windows scheduled task command before changing local service
+state.
 
 ## Other CLI Agents
 

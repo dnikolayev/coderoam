@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -155,11 +157,192 @@ func TestSetupCommandPrintsMessengerConnectionHowTo(t *testing.T) {
 		"coderoam needs a connected messenger",
 		"coderoam auth login --profile bot --qr",
 		"coderoam active start",
+		"--accept-session-risk",
 		"coderoam inbox watch --format prompt --session-id codex-session",
 		"https://github.com/dnikolayev/coderoam/blob/main/docs/SETUP.md",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("setup output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestAuthLoginRequiresSessionRiskAcknowledgementWithoutFlag(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	state := &cliState{configPath: filepath.Join(t.TempDir(), "config.toml")}
+	cmd := state.authCommand()
+	cmd.SetArgs([]string{"login", "--profile", "test", "--open-qr=false"})
+	cmd.SetIn(strings.NewReader(""))
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected session-risk acknowledgement error")
+	}
+	if !strings.Contains(err.Error(), "--accept-session-risk") {
+		t.Fatalf("auth login error = %q, want --accept-session-risk guidance", err)
+	}
+}
+
+func TestSessionRiskAcknowledgementNotNeededWhenSessionExists(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := config.EnsureProfileDirs("test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.SessionStorePath("test"), []byte("session"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	needed, err := sessionRiskAcknowledgementNeeded("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if needed {
+		t.Fatal("acknowledgement should not be needed when session database exists")
+	}
+}
+
+func TestServiceCommandDryRunPrintsInstallPlan(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := config.Default()
+	cfg.App.Profile = "bot"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "coderoam.sqlite3")
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	state := &cliState{configPath: path}
+	cmd := state.serviceCommand()
+	cmd.SetArgs([]string{"install", "--session-id", "codex-session", "--profile", "bot", "--dry-run"})
+	out, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"service_action: install",
+		"codex-session",
+		"service",
+		"run",
+		"--profile",
+		"bot",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("service dry-run output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestBuildServiceTargetDarwinLaunchAgent(t *testing.T) {
+	opts := resolvedServiceOptions{
+		serviceOptions: normalizeServiceOptions(serviceOptions{
+			SessionID:    "codex-session",
+			Profile:      "bot",
+			Format:       "prompt",
+			PollInterval: 500 * time.Millisecond,
+			StaleAfter:   15 * time.Second,
+			RestartDelay: 2 * time.Second,
+			Takeover:     true,
+		}, "bot"),
+		ConfigPath: "/Users/nick/Library/Application Support/coderoam/config.toml",
+		Executable: "/usr/local/bin/coderoam",
+		HomeDir:    "/Users/nick",
+		LogPath:    "/Users/nick/Library/Logs/coderoam/coderoam.log",
+	}
+	target, err := buildServiceTarget("darwin", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Label != "com.coderoam.watcher.bot.codex-session" {
+		t.Fatalf("label = %q", target.Label)
+	}
+	if !strings.HasSuffix(target.DefinitionPath, "Library/LaunchAgents/com.coderoam.watcher.bot.codex-session.plist") {
+		t.Fatalf("definition path = %q", target.DefinitionPath)
+	}
+	for _, want := range []string{
+		"<key>ProgramArguments</key>",
+		"<string>/usr/local/bin/coderoam</string>",
+		"<string>service</string>",
+		"<string>run</string>",
+		"<string>--takeover</string>",
+		"coderoam-watcher-bot-codex-session.log",
+	} {
+		if !strings.Contains(target.Definition, want) {
+			t.Fatalf("launch agent missing %q:\n%s", want, target.Definition)
+		}
+	}
+	if got := strings.Join(target.StartCommands[0], " "); !strings.Contains(got, "launchctl bootstrap") {
+		t.Fatalf("start command = %q", got)
+	}
+}
+
+func TestBuildServiceTargetLinuxSystemdUnit(t *testing.T) {
+	opts := resolvedServiceOptions{
+		serviceOptions: normalizeServiceOptions(serviceOptions{
+			SessionID:    "codex-session",
+			Profile:      "bot",
+			Format:       "prompt",
+			PollInterval: time.Second,
+			StaleAfter:   20 * time.Second,
+			RestartDelay: 3 * time.Second,
+			Takeover:     true,
+		}, "bot"),
+		ConfigPath: "/home/nick/.config/coderoam/config.toml",
+		Executable: "/home/nick/bin/coderoam",
+		HomeDir:    "/home/nick",
+		LogPath:    "/home/nick/.local/state/coderoam/coderoam.log",
+	}
+	target, err := buildServiceTarget("linux", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Label != "coderoam-watcher-bot-codex-session.service" {
+		t.Fatalf("label = %q", target.Label)
+	}
+	for _, want := range []string{
+		"ExecStart=/home/nick/bin/coderoam --config /home/nick/.config/coderoam/config.toml service run",
+		"--session-id codex-session",
+		"--profile bot",
+		"Restart=always",
+	} {
+		if !strings.Contains(target.Definition, want) {
+			t.Fatalf("systemd unit missing %q:\n%s", want, target.Definition)
+		}
+	}
+	if got := strings.Join(target.StartCommands[0], " "); got != "systemctl --user enable --now coderoam-watcher-bot-codex-session.service" {
+		t.Fatalf("start command = %q", got)
+	}
+}
+
+func TestBuildServiceTargetWindowsSchtasksCommands(t *testing.T) {
+	opts := resolvedServiceOptions{
+		serviceOptions: normalizeServiceOptions(serviceOptions{
+			SessionID:    "codex-session",
+			Profile:      "bot",
+			Format:       "prompt",
+			PollInterval: time.Second,
+			StaleAfter:   20 * time.Second,
+			RestartDelay: 3 * time.Second,
+			Takeover:     true,
+		}, "bot"),
+		ConfigPath: `C:\Users\Nick\AppData\Roaming\coderoam\config.toml`,
+		Executable: `C:\Program Files\coderoam\coderoam.exe`,
+		HomeDir:    `C:\Users\Nick`,
+		LogPath:    `C:\Users\Nick\AppData\Local\coderoam\logs\coderoam.log`,
+	}
+	target, err := buildServiceTarget("windows", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Label != `\coderoam\watcher-bot-codex-session` {
+		t.Fatalf("label = %q", target.Label)
+	}
+	create := strings.Join(target.InstallCommands[0], " ")
+	for _, want := range []string{
+		"schtasks /Create",
+		`/TN \coderoam\watcher-bot-codex-session`,
+		`"C:\Program Files\coderoam\coderoam.exe"`,
+		"service run",
+		"--takeover",
+	} {
+		if !strings.Contains(create, want) {
+			t.Fatalf("schtasks create command missing %q:\n%s", want, create)
 		}
 	}
 }
@@ -188,6 +371,163 @@ func TestStatusShowsSetupHintWhenMessengerNotLinked(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("status output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestDoctorWarnsAboutBroadProfileAndSessionPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits are not portable on Windows")
+	}
+	t.Setenv("HOME", t.TempDir())
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.Transport.Type = "fake"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "coderoam.sqlite3")
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.EnsureProfileDirs(cfg.App.Profile); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(config.ProfileDir(cfg.App.Profile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.SessionStorePath(cfg.App.Profile), []byte("session"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	state := &cliState{configPath: path}
+	cmd := state.doctorCommand()
+	out, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"profile_dir_permissions: warn",
+		"chmod 700",
+		"session_file_permissions: warn",
+		"chmod 600",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("doctor output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestPlannedTransportStatusExplainsUnavailableAdapter(t *testing.T) {
+	cfg := config.Default()
+	cfg.Transport.Type = "telegram"
+	state := &cliState{}
+	chatTransport, err := state.buildTransport(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := chatTransport.Status(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Connected {
+		t.Fatal("planned transport should not report connected")
+	}
+	if !strings.Contains(status.Detail, "not implemented") {
+		t.Fatalf("status detail = %q, want not implemented guidance", status.Detail)
+	}
+	if err := chatTransport.Connect(t.Context()); err == nil || !strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("connect error = %v, want not implemented", err)
+	}
+}
+
+func TestApprovalsCommandsListShowAndApprove(t *testing.T) {
+	dir := t.TempDir()
+	runnerScript := filepath.Join(dir, "runner.sh")
+	if err := os.WriteFile(runnerScript, []byte(`#!/bin/sh
+printf '%s\n' '{"version":"1.0","actions":[{"type":"reply","text":"runner: approved"}]}'
+`), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(dir, "bridge.sqlite3")
+	cfg.Transport.Type = "fake"
+	cfg.Groups = []config.GroupConfig{{
+		ID:      "chat@g.us",
+		Alias:   "session",
+		Runner:  "default",
+		Mode:    config.GroupModeRunner,
+		Enabled: true,
+	}}
+	cfg.Runner["default"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: "/bin/sh",
+		Args:    []string{runnerScript},
+	}
+	path := filepath.Join(dir, "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := store.CreatePendingInteraction(t.Context(), db.PendingInteractionRecord{
+		ProfileID: cfg.App.Profile,
+		ChatID:    "chat@g.us",
+		SenderID:  "sender@s.whatsapp.net",
+		RunnerID:  "default",
+		Prompt:    "Approve?",
+		Options:   []string{"approved", "rejected"},
+		ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	state := &cliState{configPath: path}
+	listCmd := state.approvalsCommand()
+	listCmd.SetArgs([]string{"list"})
+	listOut, err := captureStdout(t, listCmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(listOut, "Approve?") {
+		t.Fatalf("approval list output = %q", listOut)
+	}
+
+	showCmd := state.approvalsCommand()
+	showCmd.SetArgs([]string{"show", strconv.FormatInt(id, 10)})
+	showOut, err := captureStdout(t, showCmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(showOut, "Approve?") {
+		t.Fatalf("approval show output = %q", showOut)
+	}
+
+	approveCmd := state.approvalsCommand()
+	approveCmd.SetArgs([]string{"approve", strconv.FormatInt(id, 10)})
+	approveOut, err := captureStdout(t, approveCmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(approveOut, "approval") {
+		t.Fatalf("approval approve output = %q", approveOut)
+	}
+
+	store, err = db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	record, ok, err := store.GetPendingInteraction(t.Context(), cfg.App.Profile, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("approval record missing")
+	}
+	if record.Status != "answered" || record.SelectedText != "approved" {
+		t.Fatalf("approval record = %+v, want answered/approved", record)
 	}
 }
 

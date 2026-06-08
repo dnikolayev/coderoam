@@ -828,6 +828,51 @@ func (s *Store) FindPendingInteraction(ctx context.Context, profileID, chatID, s
 	return record, true, nil
 }
 
+func (s *Store) GetPendingInteraction(ctx context.Context, profileID string, id int64) (PendingInteractionRecord, bool, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+pendingInteractionColumns+`
+		FROM pending_interactions
+		WHERE profile_id = ? AND id = ?`, profileID, id)
+	record, err := scanPendingInteraction(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PendingInteractionRecord{}, false, nil
+	}
+	if err != nil {
+		return PendingInteractionRecord{}, false, err
+	}
+	return record, true, nil
+}
+
+func (s *Store) ListPendingInteractions(ctx context.Context, profileID, status string, limit int) ([]PendingInteractionRecord, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	status = strings.TrimSpace(status)
+	query := `SELECT ` + pendingInteractionColumns + `
+		FROM pending_interactions
+		WHERE profile_id = ?`
+	args := []any{profileID}
+	if status != "" {
+		query += ` AND status = ?`
+		args = append(args, status)
+	}
+	query += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	records := []PendingInteractionRecord{}
+	for rows.Next() {
+		record, err := scanPendingInteraction(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
 func (s *Store) MarkPendingInteractionAnswered(ctx context.Context, profileID string, id int64, selectedIndex int, selectedText string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE pending_interactions
 		SET status = 'answered', answered_at = ?, selected_index = ?, selected_text = ?

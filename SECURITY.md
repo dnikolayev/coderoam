@@ -29,6 +29,11 @@ WhatsApp session material is stored outside the repository under the profile dat
 
 Encrypted storage through macOS Keychain, Linux Secret Service/libsecret, and Windows DPAPI/Credential Manager is planned but not complete in this MVP. Treat the session database as sensitive.
 
+Before the first WhatsApp login for a profile, `coderoam auth login` requires a
+local session-risk acknowledgement. Interactive terminals are prompted to type
+`I understand`. Non-interactive scripts must pass `--accept-session-risk` after
+the operator has read this section.
+
 Default profile/session paths:
 
 - macOS: `~/Library/Application Support/coderoam/profiles/<profile>/`
@@ -37,6 +42,11 @@ Default profile/session paths:
 
 Never commit files named like `whatsapp-session.sqlite3`,
 `coderoam.sqlite3`, `*.sqlite3-wal`, `*.sqlite3-shm`, or QR PNG images.
+
+Run `coderoam doctor` to check profile directory and session-file permission
+bits. On Unix-like systems, profile directories should not be group/world
+accessible and session files should not be group/world readable. If doctor
+reports a warning, use the exact `chmod` command it prints.
 
 ## Runner Boundary
 

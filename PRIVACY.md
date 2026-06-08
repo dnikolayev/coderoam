@@ -12,6 +12,11 @@ The app stores:
 - WhatsApp session database.
 - SQLite operational database with messages, hashes, invocations, outbox state, and audit events.
 
+The WhatsApp session database is sensitive. First login requires a local
+acknowledgement, and non-interactive login scripts must pass
+`--accept-session-risk`. Run `coderoam doctor` to check whether profile and
+session files are private enough for the local OS.
+
 Default macOS paths are under:
 
 - `~/Library/Application Support/coderoam/`
