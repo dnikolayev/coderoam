@@ -7,6 +7,19 @@ CLI coding agents. It lets you continue a coding session from your phone, invite
 other people into the session chat, and keep each work lane isolated in its own
 group.
 
+## New install? Start here
+
+Copy-paste on macOS/Linux with Homebrew:
+
+```sh
+brew tap dnikolayev/coderoam https://github.com/dnikolayev/coderoam.git && brew install --HEAD dnikolayev/coderoam/coderoam && coderoam setup --agent auto --workdir "$PWD" --session-id codex-session
+```
+
+That installs `coderoam` and starts the onboarding helper. It detects Codex,
+Claude, Gemini, and OpenCode on `PATH`, then prints the exact WhatsApp login,
+active group, watcher, and `coderoam run` commands for your machine. WhatsApp
+pairing still requires scanning a QR code with a dedicated bridge account.
+
 This project is a local personal automation bridge. It is not affiliated with,
 endorsed by, or authorized by WhatsApp or Meta.
 
