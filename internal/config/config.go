@@ -40,9 +40,12 @@ type AppConfig struct {
 }
 
 type TransportConfig struct {
-	Type          string `toml:"type"`
-	LoginMethod   string `toml:"login_method"`
-	DownloadMedia bool   `toml:"download_media"`
+	Type                          string `toml:"type"`
+	LoginMethod                   string `toml:"login_method"`
+	DownloadMedia                 bool   `toml:"download_media"`
+	TranscribeAudio               bool   `toml:"transcribe_audio"`
+	AudioTranscribeCommand        string `toml:"audio_transcribe_command"`
+	AudioTranscribeTimeoutSeconds int    `toml:"audio_transcribe_timeout_seconds"`
 }
 
 type TriggerConfig struct {
@@ -118,6 +121,10 @@ type GroupConfig struct {
 	Mode            string `toml:"mode"`
 	ActiveSessionID string `toml:"active_session_id"`
 	Enabled         bool   `toml:"enabled"`
+	RelayManaged    bool   `toml:"relay_managed"`
+	Archived        bool   `toml:"archived"`
+	ArchivedAt      string `toml:"archived_at"`
+	ArchiveReason   string `toml:"archive_reason"`
 }
 
 func ActiveSessionID(group GroupConfig) string {
@@ -353,12 +360,19 @@ func SessionStorePath(profile string) string {
 	return filepath.Join(ProfileDir(profile), "whatsapp-session.sqlite3")
 }
 
+func MediaStorePath(profile string) string {
+	return filepath.Join(ProfileDir(profile), "media")
+}
+
 func KillSwitchPath() string {
 	return filepath.Join(filepath.Dir(DefaultConfigPath()), "KILL")
 }
 
 func EnsureProfileDirs(profile string) error {
 	if err := os.MkdirAll(ProfileDir(profile), 0o700); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(MediaStorePath(profile), 0o700); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(DefaultLogPath()), 0o700); err != nil {
@@ -391,6 +405,23 @@ func UpsertGroup(cfg *Config, group GroupConfig) {
 	}
 	for i := range cfg.Groups {
 		if cfg.Groups[i].ID == group.ID {
+			cfg.Groups[i] = group
+			return
+		}
+	}
+	cfg.Groups = append(cfg.Groups, group)
+}
+
+func UpsertActiveSessionGroup(cfg *Config, group GroupConfig) {
+	group.Mode = GroupModeActiveSession
+	group.Enabled = true
+	group.Archived = false
+	group.ArchivedAt = ""
+	group.ArchiveReason = ""
+	for i := range cfg.Groups {
+		if cfg.Groups[i].ID == group.ID ||
+			(group.Alias != "" && cfg.Groups[i].Alias == group.Alias) ||
+			(group.ActiveSessionID != "" && cfg.Groups[i].Mode == GroupModeActiveSession && ActiveSessionID(cfg.Groups[i]) == group.ActiveSessionID) {
 			cfg.Groups[i] = group
 			return
 		}

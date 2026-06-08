@@ -47,8 +47,13 @@ type inboxWatchOptions struct {
 	Takeover          bool
 }
 
+const activeInboxClaimStaleAfter = 15 * time.Second
+const activeWatcherStatusStaleAfter = 15 * time.Second
+
 func Execute() error {
 	state := &cliState{}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	root := &cobra.Command{
 		Use:   "chat-bridge",
 		Short: "Local WhatsApp group bridge for CLI applications",
@@ -57,6 +62,7 @@ func Execute() error {
 It is intended for local personal automation with a dedicated WhatsApp account.
 The WhatsApp Web transport is unofficial and may break or put the linked account at risk.`,
 	}
+	root.SetContext(ctx)
 	root.PersistentFlags().StringVar(&state.configPath, "config", "", "config file path")
 
 	root.AddCommand(
@@ -214,7 +220,7 @@ func (s *cliState) runCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			cfg, _, err := s.loadConfig()
+			cfg, path, err := s.loadConfig()
 			if err != nil {
 				return err
 			}
@@ -232,6 +238,13 @@ func (s *cliState) runCommand() *cobra.Command {
 			if err := store.EnsureProfile(ctx, cfg.App.Profile); err != nil {
 				return err
 			}
+			recovered, err := store.RecoverAbandonedActiveInbox(ctx, cfg.App.Profile, "", activeInboxClaimStaleAfter)
+			if err != nil {
+				return err
+			}
+			if recovered > 0 {
+				fmt.Printf("[active-inbox] recovered_claims=%d\n", recovered)
+			}
 			chatTransport, err := s.buildTransport(ctx, cfg)
 			if err != nil {
 				return err
@@ -243,6 +256,7 @@ func (s *cliState) runCommand() *cobra.Command {
 				queueDepth = 50
 			}
 			messages := make(chan types.IncomingMessage, queueDepth)
+			groupEvents := make(chan types.GroupEvent, queueDepth)
 			var workers sync.WaitGroup
 			workers.Add(1)
 			go func() {
@@ -258,6 +272,27 @@ func (s *cliState) runCommand() *cobra.Command {
 							continue
 						}
 						fmt.Printf("[processed] chat=%s replies=%d\n", logging.Redact(msg.ChatID), len(result.Sent))
+					}
+				}
+			}()
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case event := <-groupEvents:
+						updated, archived, err := handleRelayGroupLifecycleEvent(ctx, cfg, path, store, chatTransport, event)
+						if err != nil {
+							fmt.Printf("[group-event] chat=%s error=%s\n", logging.Redact(event.ChatID), err)
+							continue
+						}
+						if archived {
+							cfg = updated
+							bridgeRouter.SetConfig(updated)
+							fmt.Printf("[group-event] chat=%s archived=true\n", logging.Redact(event.ChatID))
+						}
 					}
 				}
 			}()
@@ -296,6 +331,18 @@ func (s *cliState) runCommand() *cobra.Command {
 					fmt.Printf("[queued] chat=%s\n", logging.Redact(msg.ChatID))
 				default:
 					fmt.Printf("[ignored] chat=%s reason=message queue full\n", logging.Redact(msg.ChatID))
+				}
+			})
+			chatTransport.SubscribeGroupEvents(func(eventCtx context.Context, event types.GroupEvent) {
+				select {
+				case <-eventCtx.Done():
+					return
+				case <-ctx.Done():
+					return
+				case groupEvents <- event:
+					fmt.Printf("[group-event] chat=%s left=%d participants=%d deleted=%t\n", logging.Redact(event.ChatID), len(event.LeftParticipantIDs), event.ParticipantCount, event.Deleted)
+				default:
+					fmt.Printf("[ignored] chat=%s reason=group event queue full\n", logging.Redact(event.ChatID))
 				}
 			})
 			if err := chatTransport.Connect(ctx); err != nil {
@@ -818,7 +865,9 @@ func (s *cliState) groupsCommand() *cobra.Command {
 			for i := range cfg.Groups {
 				if cfg.Groups[i].ID == args[0] {
 					cfg.Groups[i].Runner = runnerID
-					cfg.Groups[i].Mode = config.GroupModeRunner
+					if cfg.Groups[i].Mode == "" {
+						cfg.Groups[i].Mode = config.GroupModeRunner
+					}
 					cfg.Groups[i].Enabled = true
 					if err := config.Save(path, cfg); err != nil {
 						return err
@@ -1166,8 +1215,98 @@ func (s *cliState) runnersCommand() *cobra.Command {
 
 func (s *cliState) activeCommand() *cobra.Command {
 	active := &cobra.Command{Use: "active", Short: "Manage active Codex session relay groups"}
+	var startName string
+	var startParticipants string
+	var startAlias string
+	var startSessionID string
+	var startRunner string
+	var startYes bool
+	start := &cobra.Command{
+		Use:   "start",
+		Short: "Create a new WhatsApp group routed to an active session inbox",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !startYes {
+				return fmt.Errorf("refusing to create a WhatsApp group without --yes")
+			}
+			startName = strings.TrimSpace(startName)
+			if startName == "" {
+				return fmt.Errorf("--name is required")
+			}
+			participants := splitCSV(startParticipants)
+			if len(participants) == 0 {
+				return fmt.Errorf("--participants is required")
+			}
+			cfg, path, err := s.loadConfig()
+			if err != nil {
+				return err
+			}
+			startRunner = strings.TrimSpace(startRunner)
+			if startRunner != "" {
+				if _, ok := cfg.Runner[startRunner]; !ok {
+					return fmt.Errorf("runner not configured: %s", startRunner)
+				}
+			}
+			startAlias = strings.TrimSpace(startAlias)
+			if startAlias == "" {
+				startAlias = defaultSessionAlias(startName)
+			}
+			startSessionID = strings.TrimSpace(startSessionID)
+			if startSessionID == "" {
+				startSessionID = startAlias
+			}
+			if err := validateNewActiveSessionGroup(cfg, startAlias, startSessionID); err != nil {
+				return err
+			}
+			if err := config.EnsureProfileDirs(cfg.App.Profile); err != nil {
+				return err
+			}
+			chatTransport, err := s.buildTransport(cmd.Context(), cfg)
+			if err != nil {
+				return err
+			}
+			defer chatTransport.Close(context.Background())
+			chat, err := chatTransport.CreateGroup(cmd.Context(), startName, participants)
+			if err != nil {
+				return err
+			}
+			config.UpsertActiveSessionGroup(&cfg, config.GroupConfig{
+				ID:              chat.ID,
+				Alias:           startAlias,
+				Runner:          startRunner,
+				Mode:            config.GroupModeActiveSession,
+				ActiveSessionID: startSessionID,
+				Enabled:         true,
+				RelayManaged:    true,
+			})
+			if err := config.Save(path, cfg); err != nil {
+				return err
+			}
+			store, err := db.Open(config.ResolveDatabasePath(cfg))
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			migrated, err := store.MigrateMessagesToActiveInbox(cmd.Context(), cfg.App.Profile, chat.ID, startAlias, startSessionID)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("created active group id=%s name=%q participants=%d\n", chat.ID, chat.DisplayName, chat.ParticipantCount)
+			fmt.Printf("active group=%s alias=%s session=%s runner=%s managed=true migrated=%d\n", chat.ID, startAlias, startSessionID, nonEmpty(startRunner, "-"), migrated)
+			fmt.Printf("watch: chat-bridge inbox watch --format prompt --session-id %s\n", shellQuote(startSessionID))
+			fmt.Printf("notify: chat-bridge notify --chat %s --important --text %s\n", shellQuote(startAlias), shellQuote("Update..."))
+			return nil
+		},
+	}
+	start.Flags().StringVar(&startName, "name", "", "new group name, 25 characters max")
+	start.Flags().StringVar(&startParticipants, "participants", "", "comma-separated phone numbers or WhatsApp JIDs")
+	start.Flags().StringVar(&startAlias, "alias", "", "local active group alias; defaults to a slug of --name")
+	start.Flags().StringVar(&startSessionID, "session-id", "", "active session id; defaults to --alias")
+	start.Flags().StringVar(&startRunner, "runner", "", "optional fallback runner id; blank keeps messages queued for a live watcher")
+	start.Flags().BoolVar(&startYes, "yes", false, "confirm creating a WhatsApp group")
+
 	var alias string
 	var sessionID string
+	var enableManaged bool
 	enable := &cobra.Command{
 		Use:   "enable <chat_id>",
 		Short: "Route one allowlisted group into the active session inbox",
@@ -1177,17 +1316,29 @@ func (s *cliState) activeCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			var existing config.GroupConfig
+			for _, group := range cfg.Groups {
+				if group.ID == args[0] {
+					existing = group
+					break
+				}
+			}
+			if existing.ID != "" && existing.Mode == config.GroupModeActiveSession && existing.RelayManaged && existing.Archived && !existing.Enabled {
+				return fmt.Errorf("archived relay-managed group %s cannot be re-enabled; use active start to create a fresh group for this session", args[0])
+			}
 			if alias == "" {
-				alias = args[0]
+				alias = nonEmpty(existing.Alias, args[0])
 			}
 			if sessionID == "" {
-				sessionID = alias
+				sessionID = nonEmpty(config.ActiveSessionID(existing), alias)
 			}
 			config.UpsertGroup(&cfg, config.GroupConfig{
 				ID:              args[0],
 				Alias:           alias,
+				Runner:          existing.Runner,
 				Mode:            config.GroupModeActiveSession,
 				ActiveSessionID: sessionID,
+				RelayManaged:    existing.RelayManaged || enableManaged,
 				Enabled:         true,
 			})
 			if err := config.Save(path, cfg); err != nil {
@@ -1202,12 +1353,13 @@ func (s *cliState) activeCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("active group=%s alias=%s session=%s migrated=%d\n", args[0], alias, sessionID, migrated)
+			fmt.Printf("active group=%s alias=%s session=%s runner=%s managed=%t migrated=%d\n", args[0], alias, sessionID, nonEmpty(existing.Runner, "-"), existing.RelayManaged || enableManaged, migrated)
 			return nil
 		},
 	}
 	enable.Flags().StringVar(&alias, "alias", "", "local group alias")
 	enable.Flags().StringVar(&sessionID, "session-id", "", "active Codex session id")
+	enable.Flags().BoolVar(&enableManaged, "managed", false, "adopt this existing dedicated group into relay-managed auto-archive lifecycle")
 
 	status := &cobra.Command{
 		Use:   "status",
@@ -1222,6 +1374,9 @@ func (s *cliState) activeCommand() *cobra.Command {
 				return err
 			}
 			defer store.Close()
+			if _, err := store.ExpireActiveWatchers(cmd.Context(), cfg.App.Profile, activeWatcherStatusStaleAfter); err != nil {
+				return err
+			}
 			counts, err := store.ActiveInboxCounts(cmd.Context(), cfg.App.Profile)
 			if err != nil {
 				return err
@@ -1243,7 +1398,7 @@ func (s *cliState) activeCommand() *cobra.Command {
 				watchersBySession[watcher.SessionID] = watcher
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "CHAT_ID\tALIAS\tSESSION\tMODE\tRUNNER\tENABLED\tWATCHER\tHEARTBEAT")
+			fmt.Fprintln(w, "CHAT_ID\tALIAS\tSESSION\tMODE\tRUNNER\tENABLED\tMANAGED\tARCHIVED\tWATCHER\tHEARTBEAT")
 			for _, group := range cfg.Groups {
 				if group.Mode == config.GroupModeActiveSession {
 					sessionID := config.ActiveSessionID(group)
@@ -1253,7 +1408,7 @@ func (s *cliState) activeCommand() *cobra.Command {
 						watcherLabel = fmt.Sprintf("%s/%s", watcher.Status, watcher.ConsumerID)
 						heartbeat = watcher.HeartbeatAt.Format(time.RFC3339)
 					}
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%t\t%s\t%s\n", group.ID, group.Alias, sessionID, group.Mode, group.Runner, group.Enabled, watcherLabel, heartbeat)
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%t\t%t\t%t\t%s\t%s\n", group.ID, group.Alias, sessionID, group.Mode, group.Runner, group.Enabled, group.RelayManaged, group.Archived, watcherLabel, heartbeat)
 				}
 			}
 			if err := w.Flush(); err != nil {
@@ -1266,8 +1421,69 @@ func (s *cliState) activeCommand() *cobra.Command {
 			return nil
 		},
 	}
-	active.AddCommand(enable, status)
+	active.AddCommand(start, enable, status)
 	return active
+}
+
+func handleRelayGroupLifecycleEvent(ctx context.Context, cfg config.Config, configPath string, store *db.Store, chatTransport transport.ChatTransport, event types.GroupEvent) (config.Config, bool, error) {
+	groupIndex := -1
+	for i, group := range cfg.Groups {
+		if group.ID == event.ChatID && group.Mode == config.GroupModeActiveSession && group.RelayManaged && group.Enabled && !group.Archived {
+			groupIndex = i
+			break
+		}
+	}
+	if groupIndex < 0 {
+		return cfg, false, nil
+	}
+	archive, reason := shouldArchiveRelayGroup(event)
+	if !archive {
+		return cfg, false, nil
+	}
+	group := cfg.Groups[groupIndex]
+	archiveErrText := ""
+	if chatTransport != nil {
+		if err := chatTransport.ArchiveChat(ctx, group.ID); err != nil {
+			archiveErrText = err.Error()
+		}
+	}
+	deletedRows, err := store.DeleteChatData(ctx, cfg.App.Profile, group.ID)
+	if err != nil {
+		return cfg, false, err
+	}
+	group.Enabled = false
+	group.Archived = true
+	group.ArchivedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	group.ArchiveReason = reason
+	cfg.Groups[groupIndex] = group
+	if err := config.Save(configPath, cfg); err != nil {
+		return cfg, false, err
+	}
+	_ = store.Audit(ctx, cfg.App.Profile, "relay_group_archived", event.SenderID, group.ID, map[string]any{
+		"alias":                group.Alias,
+		"session_id":           config.ActiveSessionID(group),
+		"reason":               reason,
+		"left_participant_ids": event.LeftParticipantIDs,
+		"participant_count":    event.ParticipantCount,
+		"deleted":              event.Deleted,
+		"deleted_local_rows":   deletedRows,
+		"device_archive_error": archiveErrText,
+		"reactivation_command": fmt.Sprintf("chat-bridge active start --name %q --alias %s --session-id %s --participants <owner> --yes", group.Alias, group.Alias, config.ActiveSessionID(group)),
+	})
+	return cfg, true, nil
+}
+
+func shouldArchiveRelayGroup(event types.GroupEvent) (bool, string) {
+	if event.Deleted {
+		return true, "group deleted"
+	}
+	if len(event.LeftParticipantIDs) > 0 {
+		return true, "participant left"
+	}
+	if event.ParticipantCount == 1 {
+		return true, "no human participants remain"
+	}
+	return false, ""
 }
 
 func (s *cliState) inboxCommand() *cobra.Command {
@@ -1442,6 +1658,33 @@ func (s *cliState) inboxCommand() *cobra.Command {
 	watch.Flags().StringVar(&watchConsumerID, "consumer-id", "", "watcher identity; defaults to hostname:pid")
 	watch.Flags().DurationVar(&watchStaleAfter, "stale-after", 15*time.Second, "heartbeat age after which another watcher can replace this one")
 
+	var recoverSessionID string
+	var recoverStaleAfter time.Duration
+	recover := &cobra.Command{
+		Use:   "recover",
+		Short: "Return abandoned claimed active-session inbox rows to unread",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, _, err := s.loadConfig()
+			if err != nil {
+				return err
+			}
+			store, err := db.Open(config.ResolveDatabasePath(cfg))
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			sessionID := resolveInboxSessionID(cfg, recoverSessionID)
+			recovered, err := store.RecoverAbandonedActiveInbox(cmd.Context(), cfg.App.Profile, sessionID, recoverStaleAfter)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("recovered active inbox claims: %d\n", recovered)
+			return nil
+		},
+	}
+	recover.Flags().StringVar(&recoverSessionID, "session-id", "", "active session id to recover for")
+	recover.Flags().DurationVar(&recoverStaleAfter, "stale-after", activeInboxClaimStaleAfter, "claimed age after which rows are considered abandoned")
+
 	done := &cobra.Command{
 		Use:   "done <id>",
 		Short: "Mark one active-session inbox row done",
@@ -1458,7 +1701,15 @@ func (s *cliState) inboxCommand() *cobra.Command {
 			return s.markInbox(cmd.Context(), args[0], "ignored")
 		},
 	}
-	inbox.AddCommand(list, next, drain, watch, done, ignore)
+	requeue := &cobra.Command{
+		Use:   "requeue <id>",
+		Short: "Return one claimed active-session inbox row to unread",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return s.requeueInbox(cmd.Context(), args[0])
+		},
+	}
+	inbox.AddCommand(list, next, drain, watch, recover, done, ignore, requeue)
 	return inbox
 }
 
@@ -1529,6 +1780,31 @@ func (s *cliState) markInbox(ctx context.Context, idText string, status string) 
 		return err
 	}
 	fmt.Printf("inbox %d marked %s\n", id, status)
+	return nil
+}
+
+func (s *cliState) requeueInbox(ctx context.Context, idText string) error {
+	id, err := strconv.ParseInt(idText, 10, 64)
+	if err != nil {
+		return err
+	}
+	cfg, _, err := s.loadConfig()
+	if err != nil {
+		return err
+	}
+	store, err := db.Open(config.ResolveDatabasePath(cfg))
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	ok, err := store.RequeueActiveInbox(ctx, cfg.App.Profile, id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("inbox %d is not a claimed row", id)
+	}
+	fmt.Printf("inbox %d requeued\n", id)
 	return nil
 }
 
@@ -1665,7 +1941,13 @@ func (s *cliState) buildTransport(ctx context.Context, cfg config.Config) (trans
 		}
 		return fake.New(chats), nil
 	case "whatsapp-web", "":
-		return whatsappweb.New(ctx, config.SessionStorePath(cfg.App.Profile), cfg.App.LogLevel)
+		return whatsappweb.NewWithOptions(ctx, config.SessionStorePath(cfg.App.Profile), cfg.App.LogLevel, whatsappweb.Options{
+			DownloadMedia:                 cfg.Transport.DownloadMedia,
+			MediaDir:                      config.MediaStorePath(cfg.App.Profile),
+			TranscribeAudio:               cfg.Transport.TranscribeAudio,
+			AudioTranscribeCommand:        cfg.Transport.AudioTranscribeCommand,
+			AudioTranscribeTimeoutSeconds: cfg.Transport.AudioTranscribeTimeoutSeconds,
+		})
 	default:
 		return nil, fmt.Errorf("unsupported transport type %q", cfg.Transport.Type)
 	}
@@ -1778,19 +2060,20 @@ func watchActiveInbox(ctx context.Context, store *db.Store, cfg config.Config, o
 func writeInboxWatchRecord(w io.Writer, record db.ActiveInboxRecord, format string, cfg config.Config) error {
 	if format == "jsonl" {
 		event := struct {
-			Type               string    `json:"type"`
-			ID                 int64     `json:"id"`
-			ProfileID          string    `json:"profile_id"`
-			ChatID             string    `json:"chat_id"`
-			ChatAlias          string    `json:"chat_alias"`
-			SessionID          string    `json:"session_id"`
-			ClaimedBySessionID string    `json:"claimed_by_session_id"`
-			SenderID           string    `json:"sender_id"`
-			SenderName         string    `json:"sender_name"`
-			ExternalMessageID  string    `json:"external_message_id"`
-			Text               string    `json:"text"`
-			RawText            string    `json:"raw_text"`
-			ReceivedAt         time.Time `json:"received_at"`
+			Type               string                  `json:"type"`
+			ID                 int64                   `json:"id"`
+			ProfileID          string                  `json:"profile_id"`
+			ChatID             string                  `json:"chat_id"`
+			ChatAlias          string                  `json:"chat_alias"`
+			SessionID          string                  `json:"session_id"`
+			ClaimedBySessionID string                  `json:"claimed_by_session_id"`
+			SenderID           string                  `json:"sender_id"`
+			SenderName         string                  `json:"sender_name"`
+			ExternalMessageID  string                  `json:"external_message_id"`
+			Text               string                  `json:"text"`
+			RawText            string                  `json:"raw_text"`
+			Media              []types.MediaAttachment `json:"media,omitempty"`
+			ReceivedAt         time.Time               `json:"received_at"`
 		}{
 			Type:               "message",
 			ID:                 record.ID,
@@ -1804,6 +2087,7 @@ func writeInboxWatchRecord(w io.Writer, record db.ActiveInboxRecord, format stri
 			ExternalMessageID:  record.ExternalMessageID,
 			Text:               record.Text,
 			RawText:            record.RawText,
+			Media:              record.Media,
 			ReceivedAt:         record.ReceivedAt,
 		}
 		raw, err := json.Marshal(event)
@@ -1896,7 +2180,69 @@ func nonEmpty(values ...string) string {
 	return ""
 }
 
+func defaultSessionAlias(name string) string {
+	var b strings.Builder
+	lastDash := false
+	for _, r := range strings.TrimSpace(name) {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+			lastDash = false
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r + ('a' - 'A'))
+			lastDash = false
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastDash = false
+		default:
+			if b.Len() > 0 && !lastDash {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+	alias := strings.Trim(b.String(), "-")
+	if alias == "" {
+		return "session"
+	}
+	return alias
+}
+
+func validateNewActiveSessionGroup(cfg config.Config, alias string, sessionID string) error {
+	for _, group := range cfg.Groups {
+		if group.Mode == config.GroupModeActiveSession && group.RelayManaged && group.Archived && !group.Enabled {
+			continue
+		}
+		if group.Alias == alias {
+			return fmt.Errorf("group alias already configured: %s", alias)
+		}
+		if group.Mode == config.GroupModeActiveSession && config.ActiveSessionID(group) == sessionID {
+			return fmt.Errorf("active session id already configured: %s", sessionID)
+		}
+	}
+	return nil
+}
+
+func shellQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '-', '_', '.', '/', ':', '@':
+			continue
+		default:
+			return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+		}
+	}
+	return value
+}
+
 func resolveGroup(cfg config.Config, value string) (config.GroupConfig, bool) {
+	var fallback *config.GroupConfig
 	for _, group := range cfg.Groups {
 		if group.ID == value || group.Alias == value {
 			if group.Mode == "" {
@@ -1905,8 +2251,15 @@ func resolveGroup(cfg config.Config, value string) (config.GroupConfig, bool) {
 			if group.Mode == config.GroupModeRunner && group.Runner == "" {
 				group.Runner = "default"
 			}
-			return group, true
+			if group.Enabled && !group.Archived {
+				return group, true
+			}
+			copy := group
+			fallback = &copy
 		}
+	}
+	if fallback != nil {
+		return *fallback, true
 	}
 	return config.GroupConfig{}, false
 }
@@ -1933,12 +2286,25 @@ func writeInboxRecord(w io.Writer, record db.ActiveInboxRecord, format string, c
 		fmt.Fprintf(w, "Sender: %s\n", record.SenderID)
 		fmt.Fprintf(w, "Received: %s\n\n", record.ReceivedAt.Format(time.RFC3339))
 		fmt.Fprintln(w, record.Text)
+		if attachments := formatMediaAttachmentPrompt(record.Media); attachments != "" {
+			fmt.Fprintf(w, "\n%s\n", attachments)
+		}
+		hasAudio := hasAudioAttachment(record.Media)
+		if hasAudio {
+			fmt.Fprintln(w, "\nVoice/audio command gate: transcribe every voice memo or audio attachment first. Do not apply any instruction or slash command from the audio until the transcript is available; if transcription is unavailable, ask for text.")
+		}
 		if command, value, ok := parseInboxSlashCommand(record.RawText); ok {
 			fmt.Fprintf(w, "\nDetected Codex command: %s\n", command)
 			authorized := isSlashCommandSenderAuthorized(cfg, record.SenderID)
 			if authorized {
 				fmt.Fprintln(w, "Security: sender is authorized for WhatsApp slash commands.")
-				if command == "/goal" {
+				if hasAudio {
+					fmt.Fprintln(w, "Voice/audio command gate: sender is authorized, but do not execute this slash command until the voice/audio transcript confirms it.")
+					if command == "/goal" {
+						fmt.Fprintf(w, "Goal objective candidate: %s\n", value)
+						fmt.Fprintln(w, "After transcription confirms the command, treat this as an explicit user goal request from WhatsApp.")
+					}
+				} else if command == "/goal" {
 					fmt.Fprintf(w, "Goal objective: %s\n", value)
 					fmt.Fprintln(w, "Treat this as an explicit user goal request from WhatsApp.")
 				}
@@ -1950,6 +2316,72 @@ func writeInboxRecord(w io.Writer, record db.ActiveInboxRecord, format string, c
 		_, err := fmt.Fprintf(w, "\nAfter handling it, run: chat-bridge inbox done %d\n", record.ID)
 		return err
 	}
+}
+
+func formatMediaAttachmentPrompt(media []types.MediaAttachment) string {
+	if len(media) == 0 {
+		return ""
+	}
+	var out strings.Builder
+	out.WriteString("Attachments:\n")
+	for i, item := range media {
+		label := strings.TrimSpace(item.Type)
+		if label == "" {
+			label = "media"
+		}
+		details := []string{label}
+		if item.MIMEType != "" {
+			details = append(details, "mime="+item.MIMEType)
+		}
+		if item.FileName != "" {
+			details = append(details, "file="+item.FileName)
+		}
+		if item.Size > 0 {
+			details = append(details, fmt.Sprintf("bytes=%d", item.Size))
+		}
+		if item.DurationSeconds > 0 {
+			details = append(details, fmt.Sprintf("seconds=%d", item.DurationSeconds))
+		}
+		fmt.Fprintf(&out, "%d. %s\n", i+1, strings.Join(details, " "))
+		if item.LocalPath != "" {
+			fmt.Fprintf(&out, "   local_path: %s\n", item.LocalPath)
+			if isAudioAttachment(item) {
+				if item.Transcript == "" {
+					out.WriteString("   note: audio file is local; transcribe it before applying any instruction or slash command from the audio.\n")
+				}
+			}
+		} else if isAudioAttachment(item) {
+			out.WriteString("   note: audio was not downloaded; do not apply commands from it. Ask for a text resend or enable transport.download_media.\n")
+		}
+		if item.Transcript != "" {
+			fmt.Fprintf(&out, "   transcript: %s\n", item.Transcript)
+		}
+		if item.TranscriptError != "" {
+			fmt.Fprintf(&out, "   transcript_error: %s\n", item.TranscriptError)
+		}
+		if item.DownloadError != "" {
+			fmt.Fprintf(&out, "   download_error: %s\n", item.DownloadError)
+		}
+		if item.Caption != "" {
+			fmt.Fprintf(&out, "   caption: %s\n", item.Caption)
+		}
+	}
+	return strings.TrimRight(out.String(), "\n")
+}
+
+func isAudioAttachment(item types.MediaAttachment) bool {
+	kind := strings.ToLower(strings.TrimSpace(item.Type))
+	mimeType := strings.ToLower(strings.TrimSpace(item.MIMEType))
+	return kind == "audio" || kind == "voice" || strings.HasPrefix(mimeType, "audio/")
+}
+
+func hasAudioAttachment(media []types.MediaAttachment) bool {
+	for _, item := range media {
+		if isAudioAttachment(item) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseInboxSlashCommand(text string) (command string, value string, ok bool) {
@@ -2061,6 +2493,7 @@ func buildRunnerPreset(name, workdir string, timeoutSeconds int, model, systemPr
 		env := map[string]string{
 			"CODEX_RUNNER_WORKDIR":         workdir,
 			"CODEX_RUNNER_SANDBOX":         "workspace-write",
+			"CODEX_RUNNER_APPROVAL_POLICY": "never",
 			"CODEX_RUNNER_TIMEOUT_SECONDS": strconv.Itoa(timeoutSeconds),
 			"CODEX_RUNNER_SYSTEM_PROMPT":   defaultCodexPrompt(true),
 		}
@@ -2073,6 +2506,7 @@ func buildRunnerPreset(name, workdir string, timeoutSeconds int, model, systemPr
 		return presetRunnerConfig("codex-runner", timeoutSeconds, env), nil
 	case "codex-active":
 		env := map[string]string{
+			"CODEX_RUNNER_APPROVAL_POLICY": "never",
 			"CODEX_RUNNER_WORKDIR":         workdir,
 			"CODEX_RUNNER_RESUME":          "last",
 			"CODEX_RUNNER_RESUME_ALL":      "true",
@@ -2093,6 +2527,7 @@ func buildRunnerPreset(name, workdir string, timeoutSeconds int, model, systemPr
 			return config.RunnerConfig{}, fmt.Errorf("--session-id is required for codex-session")
 		}
 		env := map[string]string{
+			"CODEX_RUNNER_APPROVAL_POLICY": "never",
 			"CODEX_RUNNER_WORKDIR":         workdir,
 			"CODEX_RUNNER_SESSION_ID":      strings.TrimSpace(sessionID),
 			"CODEX_RUNNER_IMPORTANT_ONLY":  "true",
@@ -2177,18 +2612,18 @@ func siblingExecutable(name string) string {
 
 func defaultCodexPrompt(canEdit bool) string {
 	if canEdit {
-		return "You are Codex replying through WhatsApp. You may edit files in the configured workspace when explicitly asked. Keep replies concise: summarize files changed, commands run, and any remaining risk. Do not run destructive commands."
+		return "You are Codex replying through WhatsApp. Keep replies concise enough for WhatsApp. For short chat/status/health-check messages, answer immediately without inspecting files or running commands. Only inspect files, run commands, or edit files when explicitly asked to fix, implement, inspect, test, or change something. For voice memos or audio attachments, transcribe the audio first; only apply instructions or slash commands from the audio after the transcript is available and any slash-command authorization shown in the prompt allows it. You may edit files in the configured workspace when explicitly asked. Summarize files changed, commands run, and any remaining risk. Do not run destructive commands."
 	}
-	return "You are Codex replying through WhatsApp. Answer concisely in plain text. Do not edit files in this runner mode."
+	return "You are Codex replying through WhatsApp. Answer concisely in plain text. For voice memos or audio attachments, transcribe the audio first; only apply instructions or slash commands from the audio after the transcript is available and any slash-command authorization shown in the prompt allows it. Do not edit files in this runner mode."
 }
 
 func defaultCodexActivePrompt() string {
-	return "Continue the existing Codex session from WhatsApp. Treat the WhatsApp message as the next user turn. Keep replies concise enough for WhatsApp: summarize what changed, commands run, and any follow-up needed. Do not run destructive commands."
+	return "Continue the existing Codex session from WhatsApp. Treat the WhatsApp message as the next user turn. Keep replies concise enough for WhatsApp: summarize what changed, commands run, and any follow-up needed. For voice memos or audio attachments, transcribe the audio first; only apply instructions or slash commands from the audio after the transcript is available and any slash-command authorization shown in the prompt allows it. Do not run destructive commands."
 }
 
 func defaultClaudePrompt(canEdit bool) string {
 	if canEdit {
-		return "You are Claude Code replying through WhatsApp. You may edit files in the configured workspace when explicitly asked. Keep replies concise: summarize files changed, commands run, and any remaining risk. Do not run destructive commands."
+		return "You are Claude Code replying through WhatsApp. You may edit files in the configured workspace when explicitly asked. For voice memos or audio attachments, transcribe the audio first; only apply instructions or slash commands from the audio after the transcript is available and any slash-command authorization shown in the prompt allows it. Keep replies concise: summarize files changed, commands run, and any remaining risk. Do not run destructive commands."
 	}
-	return "You are Claude replying through WhatsApp. Answer concisely in plain text. Do not edit files in this runner mode."
+	return "You are Claude replying through WhatsApp. Answer concisely in plain text. For voice memos or audio attachments, transcribe the audio first; only apply instructions or slash commands from the audio after the transcript is available and any slash-command authorization shown in the prompt allows it. Do not edit files in this runner mode."
 }

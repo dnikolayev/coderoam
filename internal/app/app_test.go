@@ -2,8 +2,12 @@ package app
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
+	"io"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,6 +58,20 @@ func TestBuildRunnerPresetEnablesImportantOnlyForResumableAssistants(t *testing.
 			}
 			if got := runner.Env[tt.markerKey]; got != "[[chat-bridge-ignore]]" {
 				t.Fatalf("%s = %q, want default marker", tt.markerKey, got)
+			}
+		})
+	}
+}
+
+func TestBuildRunnerPresetCodexCodingPresetsAreNonInteractive(t *testing.T) {
+	for _, preset := range []string{"codex-code", "codex-active", "codex-session"} {
+		t.Run(preset, func(t *testing.T) {
+			runner, err := buildRunnerPreset(preset, t.TempDir(), 120, "", "", "session-id")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := runner.Env["CODEX_RUNNER_APPROVAL_POLICY"]; got != "never" {
+				t.Fatalf("CODEX_RUNNER_APPROVAL_POLICY = %q, want never", got)
 			}
 		})
 	}
@@ -153,6 +171,13 @@ func TestWatchActiveInboxClaimsMatchingSessionJSONL(t *testing.T) {
 		SenderID: "sender@s.whatsapp.net",
 		Text:     "hello session a",
 		RawText:  "hello session a",
+		Media: []types.MediaAttachment{{
+			Type:            "voice",
+			MIMEType:        "audio/ogg; codecs=opus",
+			Size:            1234,
+			DurationSeconds: 5,
+			LocalPath:       filepath.Join(t.TempDir(), "voice.ogg"),
+		}},
 	}
 	msgB := types.IncomingMessage{
 		ID:       "wa-session-b",
@@ -182,16 +207,20 @@ func TestWatchActiveInboxClaimsMatchingSessionJSONL(t *testing.T) {
 		t.Fatal(err)
 	}
 	var event struct {
-		Type               string `json:"type"`
-		Text               string `json:"text"`
-		SessionID          string `json:"session_id"`
-		ClaimedBySessionID string `json:"claimed_by_session_id"`
+		Type               string                  `json:"type"`
+		Text               string                  `json:"text"`
+		SessionID          string                  `json:"session_id"`
+		ClaimedBySessionID string                  `json:"claimed_by_session_id"`
+		Media              []types.MediaAttachment `json:"media"`
 	}
 	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &event); err != nil {
 		t.Fatalf("jsonl output %q: %v", stdout.String(), err)
 	}
 	if event.Type != "message" || event.Text != msgA.Text || event.SessionID != "session-a" || event.ClaimedBySessionID != "session-a" {
 		t.Fatalf("event = %+v", event)
+	}
+	if len(event.Media) != 1 || event.Media[0].Type != "voice" || event.Media[0].LocalPath == "" {
+		t.Fatalf("event media = %+v", event.Media)
 	}
 	claimed, err := store.ListActiveInbox(t.Context(), cfg.App.Profile, "claimed", 10)
 	if err != nil {
@@ -220,6 +249,554 @@ func TestWatchActiveInboxClaimsMatchingSessionJSONL(t *testing.T) {
 	}
 	if watcher.Status != "stopped" {
 		t.Fatalf("watcher status = %q, want stopped", watcher.Status)
+	}
+}
+
+func TestWatchActiveInboxSkipsStaleClaimedRow(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	dbPath := filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.App.DatabasePath = dbPath
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	previous := types.IncomingMessage{
+		ID:        "wa-previous",
+		ChatID:    "chat@g.us",
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "previous",
+		RawText:   "previous",
+		Timestamp: time.Now().Add(-time.Minute),
+	}
+	current := types.IncomingMessage{
+		ID:        "wa-current",
+		ChatID:    "chat@g.us",
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "current",
+		RawText:   "current",
+		Timestamp: time.Now(),
+	}
+	if _, _, err := store.StoreActiveInboxMessage(t.Context(), cfg.App.Profile, "codex-session", "codex-session", previous); err != nil {
+		t.Fatal(err)
+	}
+	claimedPrevious, ok, err := store.ClaimNextActiveInboxForSession(t.Context(), cfg.App.Profile, "codex-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected previous row to be claimed")
+	}
+	rawDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rawDB.Close()
+	if _, err := rawDB.ExecContext(t.Context(), `UPDATE active_inbox SET claimed_at = ? WHERE id = ?`, time.Now().Add(-time.Minute).Format(time.RFC3339Nano), claimedPrevious.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.StoreActiveInboxMessage(t.Context(), cfg.App.Profile, "codex-session", "codex-session", current); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	err = watchActiveInbox(t.Context(), store, cfg, inboxWatchOptions{
+		SessionID:         "codex-session",
+		Format:            "jsonl",
+		ConsumerID:        "test-consumer",
+		PollInterval:      time.Millisecond,
+		HeartbeatInterval: time.Millisecond,
+		StaleAfter:        time.Second,
+		MaxMessages:       1,
+	}, &stdout, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event struct {
+		Text              string `json:"text"`
+		ExternalMessageID string `json:"external_message_id"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &event); err != nil {
+		t.Fatalf("jsonl output %q: %v", stdout.String(), err)
+	}
+	if event.Text != "current" || event.ExternalMessageID != "wa-current" {
+		t.Fatalf("event = %+v", event)
+	}
+	claimed, err := store.ListActiveInbox(t.Context(), cfg.App.Profile, "claimed", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 2 || claimed[0].ExternalMessageID != "wa-previous" || claimed[1].ExternalMessageID != "wa-current" {
+		t.Fatalf("claimed rows = %+v", claimed)
+	}
+}
+
+func TestWriteInboxRecordIncludesLocalAudioAttachment(t *testing.T) {
+	cfg := config.Default()
+	record := db.ActiveInboxRecord{
+		ID:                7,
+		ChatID:            "chat@g.us",
+		ChatAlias:         "codex-session",
+		SessionID:         "codex-session",
+		SenderID:          "sender@s.whatsapp.net",
+		ExternalMessageID: "wa-voice",
+		Text:              "[voice] mime=audio/ogg; codecs=opus seconds=5",
+		RawText:           "[voice] mime=audio/ogg; codecs=opus seconds=5",
+		Media: []types.MediaAttachment{{
+			Type:            "voice",
+			MIMEType:        "audio/ogg; codecs=opus",
+			DurationSeconds: 5,
+			LocalPath:       "/tmp/voice.ogg",
+		}},
+		ReceivedAt: time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC),
+	}
+	var out bytes.Buffer
+	if err := writeInboxRecord(&out, record, "prompt", cfg); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"Attachments:", "local_path: /tmp/voice.ogg", "transcribe it before applying"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("prompt missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestWriteInboxRecordIncludesAudioTranscript(t *testing.T) {
+	cfg := config.Default()
+	record := db.ActiveInboxRecord{
+		ID:                9,
+		ChatID:            "chat@g.us",
+		ChatAlias:         "codex-session",
+		SessionID:         "codex-session",
+		SenderID:          "sender@s.whatsapp.net",
+		ExternalMessageID: "wa-voice-transcript",
+		Text:              "[voice] mime=audio/ogg; codecs=opus seconds=5 transcript=ship it",
+		RawText:           "[voice] mime=audio/ogg; codecs=opus seconds=5 transcript=ship it",
+		Media: []types.MediaAttachment{{
+			Type:            "voice",
+			MIMEType:        "audio/ogg; codecs=opus",
+			DurationSeconds: 5,
+			LocalPath:       "/tmp/voice.ogg",
+			Transcript:      "ship it",
+		}},
+		ReceivedAt: time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC),
+	}
+	var out bytes.Buffer
+	if err := writeInboxRecord(&out, record, "prompt", cfg); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"Attachments:", "local_path: /tmp/voice.ogg", "transcript: ship it"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("prompt missing %q: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "transcribe it before applying") {
+		t.Fatalf("prompt should not request transcription when transcript is present: %q", got)
+	}
+}
+
+func TestWriteInboxRecordDefersSlashCommandWhenAudioAttached(t *testing.T) {
+	cfg := config.Default()
+	cfg.Security.AdminSenderIDs = []string{"sender@s.whatsapp.net"}
+	record := db.ActiveInboxRecord{
+		ID:                8,
+		ChatID:            "chat@g.us",
+		ChatAlias:         "codex-session",
+		SessionID:         "codex-session",
+		SenderID:          "sender@s.whatsapp.net",
+		ExternalMessageID: "wa-voice-goal",
+		Text:              "/goal ship it\n\n[voice] mime=audio/ogg; codecs=opus seconds=5",
+		RawText:           "/goal ship it",
+		Media: []types.MediaAttachment{{
+			Type:            "voice",
+			MIMEType:        "audio/ogg; codecs=opus",
+			DurationSeconds: 5,
+			LocalPath:       "/tmp/voice.ogg",
+		}},
+		ReceivedAt: time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC),
+	}
+	var out bytes.Buffer
+	if err := writeInboxRecord(&out, record, "prompt", cfg); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"Detected Codex command: /goal", "sender is authorized", "do not execute this slash command until the voice/audio transcript confirms it", "Goal objective candidate: ship it"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("prompt missing %q: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "Treat this as an explicit user goal request from WhatsApp.") {
+		t.Fatalf("audio slash command should not be immediately executable: %q", got)
+	}
+}
+
+func TestGroupsSetRunnerPreservesActiveSessionMode(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Runner["codex-session"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+	}
+	cfg.Groups = []config.GroupConfig{{
+		ID:              "chat@g.us",
+		Alias:           "codex-session",
+		Runner:          "codex-active",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "codex-session",
+		Enabled:         true,
+	}}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	state := &cliState{configPath: path}
+	cmd := state.groupsCommand()
+	cmd.SetArgs([]string{"set-runner", "chat@g.us", "codex-session"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, ok := config.FindGroup(updated, "chat@g.us")
+	if !ok {
+		t.Fatal("group not found")
+	}
+	if group.Runner != "codex-session" {
+		t.Fatalf("runner = %q, want codex-session", group.Runner)
+	}
+	if group.Mode != config.GroupModeActiveSession {
+		t.Fatalf("mode = %q, want active-session", group.Mode)
+	}
+	if group.ActiveSessionID != "codex-session" {
+		t.Fatalf("active session id = %q, want codex-session", group.ActiveSessionID)
+	}
+}
+
+func TestActiveStartCreatesParallelSessionGroup(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Transport.Type = "fake"
+	cfg.Runner["codex-active"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+	}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	state := &cliState{configPath: path}
+	cmd := state.activeCommand()
+	cmd.SetArgs([]string{
+		"start",
+		"--name", "Parallel Work",
+		"--participants", "+15550001111",
+		"--alias", "parallel-work",
+		"--session-id", "parallel-work",
+		"--runner", "codex-active",
+		"--yes",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, ok := resolveGroup(updated, "parallel-work")
+	if !ok {
+		t.Fatal("active group not configured")
+	}
+	if group.ID != "fake-1@g.us" {
+		t.Fatalf("group id = %q, want fake-1@g.us", group.ID)
+	}
+	if group.Mode != config.GroupModeActiveSession {
+		t.Fatalf("mode = %q, want active-session", group.Mode)
+	}
+	if group.Runner != "codex-active" {
+		t.Fatalf("runner = %q, want codex-active", group.Runner)
+	}
+	if group.ActiveSessionID != "parallel-work" {
+		t.Fatalf("active session id = %q, want parallel-work", group.ActiveSessionID)
+	}
+	if !group.Enabled {
+		t.Fatal("group should be enabled")
+	}
+}
+
+func TestActiveStartDefaultsAliasAndSessionFromName(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Transport.Type = "fake"
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	state := &cliState{configPath: path}
+	cmd := state.activeCommand()
+	cmd.SetArgs([]string{
+		"start",
+		"--name", "Claims QA #2",
+		"--participants", "+15550001111",
+		"--yes",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, ok := resolveGroup(updated, "claims-qa-2")
+	if !ok {
+		t.Fatal("active group not configured under default alias")
+	}
+	if group.ActiveSessionID != "claims-qa-2" {
+		t.Fatalf("active session id = %q, want claims-qa-2", group.ActiveSessionID)
+	}
+	if group.Runner != "" {
+		t.Fatalf("runner = %q, want empty fallback runner", group.Runner)
+	}
+}
+
+func TestActiveStartReactivatesArchivedManagedSessionGroup(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Transport.Type = "fake"
+	cfg.Groups = []config.GroupConfig{{
+		ID:              "old@g.us",
+		Alias:           "claims-qa",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "claims-qa",
+		RelayManaged:    true,
+		Enabled:         false,
+		Archived:        true,
+		ArchivedAt:      time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano),
+		ArchiveReason:   "participant left",
+	}}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	state := &cliState{configPath: path}
+	cmd := state.activeCommand()
+	cmd.SetArgs([]string{
+		"start",
+		"--name", "Claims QA",
+		"--participants", "+15550001111",
+		"--alias", "claims-qa",
+		"--session-id", "claims-qa",
+		"--yes",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.Groups) != 1 {
+		t.Fatalf("groups = %+v, want one reactivated group", updated.Groups)
+	}
+	group := updated.Groups[0]
+	if group.ID == "old@g.us" || !strings.HasPrefix(group.ID, "fake-") || group.Alias != "claims-qa" || config.ActiveSessionID(group) != "claims-qa" {
+		t.Fatalf("reactivated group = %+v", group)
+	}
+	if !group.Enabled || !group.RelayManaged || group.Archived || group.ArchivedAt != "" || group.ArchiveReason != "" {
+		t.Fatalf("reactivated group flags = %+v", group)
+	}
+}
+
+func TestActiveEnableManagedPreservesRunner(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Transport.Type = "fake"
+	cfg.Groups = []config.GroupConfig{{
+		ID:              "existing@g.us",
+		Alias:           "codex-session",
+		Runner:          "codex-active",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "codex-session",
+		Enabled:         true,
+	}}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	state := &cliState{configPath: path}
+	cmd := state.activeCommand()
+	cmd.SetArgs([]string{
+		"enable",
+		"existing@g.us",
+		"--alias", "codex-session",
+		"--session-id", "codex-session",
+		"--managed",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group := updated.Groups[0]
+	if !group.Enabled || !group.RelayManaged || group.Runner != "codex-active" {
+		t.Fatalf("managed active group = %+v", group)
+	}
+}
+
+func TestActiveEnableRejectsArchivedManagedGroup(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Transport.Type = "fake"
+	cfg.Groups = []config.GroupConfig{{
+		ID:              "archived@g.us",
+		Alias:           "archived-session",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "archived-session",
+		RelayManaged:    true,
+		Enabled:         false,
+		Archived:        true,
+		ArchiveReason:   "participant left",
+	}}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	state := &cliState{configPath: path}
+	cmd := state.activeCommand()
+	cmd.SetArgs([]string{"enable", "archived@g.us", "--alias", "archived-session", "--session-id", "archived-session"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "use active start") {
+		t.Fatalf("error = %v, want active start guidance", err)
+	}
+}
+
+func TestRelayGroupLeaveArchivesManagedSessionGroup(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Groups = []config.GroupConfig{{
+		ID:              "managed@g.us",
+		Alias:           "managed-session",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "managed-session",
+		RelayManaged:    true,
+		Enabled:         true,
+	}}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, _, err := store.StoreActiveInboxMessage(t.Context(), cfg.App.Profile, "managed-session", "managed-session", types.IncomingMessage{
+		ID:       "wa-managed",
+		ChatID:   "managed@g.us",
+		SenderID: "owner@s.whatsapp.net",
+		Text:     "please handle this",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.QueueActiveOutbox(t.Context(), cfg.App.Profile, "managed@g.us", "pending update", true); err != nil {
+		t.Fatal(err)
+	}
+	ft := fake.New(nil)
+	updated, archived, err := handleRelayGroupLifecycleEvent(t.Context(), cfg, path, store, ft, types.GroupEvent{
+		ChatID:             "managed@g.us",
+		SenderID:           "owner@s.whatsapp.net",
+		LeftParticipantIDs: []string{"owner@s.whatsapp.net"},
+		ParticipantCount:   1,
+		Timestamp:          time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !archived {
+		t.Fatal("expected managed group to be archived")
+	}
+	if len(ft.Archived) != 1 || ft.Archived[0] != "managed@g.us" {
+		t.Fatalf("archived chats = %+v", ft.Archived)
+	}
+	group := updated.Groups[0]
+	if group.Enabled || !group.Archived || group.ArchiveReason != "participant left" || group.ArchivedAt == "" {
+		t.Fatalf("archived group = %+v", group)
+	}
+	reloaded, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Groups[0].Enabled || !reloaded.Groups[0].Archived {
+		t.Fatalf("persisted group = %+v", reloaded.Groups[0])
+	}
+	rows, err := store.ListActiveInbox(t.Context(), cfg.App.Profile, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("active inbox rows after archive = %+v", rows)
+	}
+	pendingOutbox, err := store.PendingActiveOutbox(t.Context(), cfg.App.Profile, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pendingOutbox) != 0 {
+		t.Fatalf("active outbox rows after archive = %+v", pendingOutbox)
+	}
+}
+
+func TestShouldArchiveRelayGroupReasons(t *testing.T) {
+	cases := []struct {
+		name    string
+		event   types.GroupEvent
+		archive bool
+		reason  string
+	}{
+		{
+			name:    "group deleted",
+			event:   types.GroupEvent{Deleted: true},
+			archive: true,
+			reason:  "group deleted",
+		},
+		{
+			name:    "participant left",
+			event:   types.GroupEvent{LeftParticipantIDs: []string{"owner@s.whatsapp.net"}, ParticipantCount: 2},
+			archive: true,
+			reason:  "participant left",
+		},
+		{
+			name:    "only bridge remains",
+			event:   types.GroupEvent{ParticipantCount: 1},
+			archive: true,
+			reason:  "no human participants remain",
+		},
+		{
+			name:    "ordinary group update",
+			event:   types.GroupEvent{JoinedParticipantIDs: []string{"owner@s.whatsapp.net"}, ParticipantCount: 2},
+			archive: false,
+			reason:  "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			archive, reason := shouldArchiveRelayGroup(tc.event)
+			if archive != tc.archive || reason != tc.reason {
+				t.Fatalf("shouldArchiveRelayGroup() = (%t, %q), want (%t, %q)", archive, reason, tc.archive, tc.reason)
+			}
+		})
 	}
 }
 
