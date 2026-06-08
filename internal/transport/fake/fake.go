@@ -11,12 +11,14 @@ import (
 )
 
 type Transport struct {
-	mu        sync.Mutex
-	connected bool
-	handler   transport.MessageHandler
-	chats     []types.Chat
-	Sent      []Sent
-	Read      []ReadReceipt
+	mu           sync.Mutex
+	connected    bool
+	handler      transport.MessageHandler
+	groupHandler transport.GroupEventHandler
+	chats        []types.Chat
+	Sent         []Sent
+	Read         []ReadReceipt
+	Archived     []string
 }
 
 type Sent struct {
@@ -93,6 +95,12 @@ func (t *Transport) Subscribe(handler transport.MessageHandler) {
 	t.handler = handler
 }
 
+func (t *Transport) SubscribeGroupEvents(handler transport.GroupEventHandler) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.groupHandler = handler
+}
+
 func (t *Transport) SendText(ctx context.Context, chatID string, text string, opts types.SendOptions) (*types.SentMessage, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -115,12 +123,28 @@ func (t *Transport) MarkRead(ctx context.Context, msg types.IncomingMessage) err
 	return nil
 }
 
+func (t *Transport) ArchiveChat(ctx context.Context, chatID string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.Archived = append(t.Archived, chatID)
+	return nil
+}
+
 func (t *Transport) Inject(ctx context.Context, msg types.IncomingMessage) {
 	t.mu.Lock()
 	handler := t.handler
 	t.mu.Unlock()
 	if handler != nil {
 		handler(ctx, msg)
+	}
+}
+
+func (t *Transport) InjectGroupEvent(ctx context.Context, evt types.GroupEvent) {
+	t.mu.Lock()
+	handler := t.groupHandler
+	t.mu.Unlock()
+	if handler != nil {
+		handler(ctx, evt)
 	}
 }
 

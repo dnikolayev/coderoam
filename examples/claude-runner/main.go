@@ -12,13 +12,27 @@ import (
 )
 
 type request struct {
-	Version   string `json:"version"`
-	RequestID string `json:"request_id"`
-	ProfileID string `json:"profile_id"`
-	ChatID    string `json:"chat_id"`
-	SenderID  string `json:"sender_id"`
-	Text      string `json:"text"`
-	RawText   string `json:"raw_text"`
+	Version   string            `json:"version"`
+	RequestID string            `json:"request_id"`
+	ProfileID string            `json:"profile_id"`
+	ChatID    string            `json:"chat_id"`
+	SenderID  string            `json:"sender_id"`
+	Text      string            `json:"text"`
+	RawText   string            `json:"raw_text"`
+	Media     []mediaAttachment `json:"media"`
+}
+
+type mediaAttachment struct {
+	Type            string `json:"type"`
+	MIMEType        string `json:"mime_type,omitempty"`
+	FileName        string `json:"file_name,omitempty"`
+	Caption         string `json:"caption,omitempty"`
+	Size            uint64 `json:"size,omitempty"`
+	DurationSeconds uint32 `json:"duration_seconds,omitempty"`
+	LocalPath       string `json:"local_path,omitempty"`
+	DownloadError   string `json:"download_error,omitempty"`
+	Transcript      string `json:"transcript,omitempty"`
+	TranscriptError string `json:"transcript_error,omitempty"`
 }
 
 type response struct {
@@ -102,6 +116,7 @@ func runClaude(req request) (string, time.Duration, error) {
 	if extra := os.Getenv("CLAUDE_RUNNER_EXTRA_ARGS"); extra != "" {
 		args = append(args, strings.Fields(extra)...)
 	}
+	req = transcribeAudioAttachments(ctx, req, "CLAUDE_RUNNER")
 	args = append(args, buildPrompt(req))
 
 	cmd := exec.CommandContext(ctx, claudeBin, args...)
@@ -119,12 +134,134 @@ func runClaude(req request) (string, time.Duration, error) {
 func buildPrompt(req request) string {
 	base := strings.TrimSpace(os.Getenv("CLAUDE_RUNNER_SYSTEM_PROMPT"))
 	if base == "" {
-		base = "You are replying to a WhatsApp group through chat-bridge. Keep the reply concise and plain text."
+		base = "You are replying to a WhatsApp group through chat-bridge. Keep the reply concise and plain text. For voice memos or audio attachments, transcribe the audio first; only apply instructions or slash commands from the audio after the transcript is available and any slash-command authorization shown in the prompt allows it."
 	}
 	if envBool("CLAUDE_RUNNER_IMPORTANT_ONLY", false) {
-		base = base + "\n\nWhatsApp notification policy: send a reply only when there is an important update: a plan/checklist change, a blocker, a question requiring the user, or a final summary. Do not narrate routine tool calls, command output, or minor progress. If there is no important update for WhatsApp, reply exactly " + ignoreMarker() + "."
+		base = base + "\n\nWhatsApp notification policy: send a reply only when there is an important update: a plan/checklist change, a blocker, a question requiring the user, an approval or input request, or a final summary. Do not narrate routine tool calls, command output, or minor progress. If there is no important update for WhatsApp, reply exactly " + ignoreMarker() + "."
 	}
-	return fmt.Sprintf("%s\n\nSender: %s\nChat: %s\n\nMessage:\n%s\n", base, req.SenderID, req.ChatID, req.Text)
+	var prompt strings.Builder
+	fmt.Fprintf(&prompt, "%s\n\nSender: %s\nChat: %s\n\nMessage:\n%s\n", base, req.SenderID, req.ChatID, req.Text)
+	if attachments := formatAttachmentPrompt(req.Media); attachments != "" {
+		fmt.Fprintf(&prompt, "\n%s\n", attachments)
+	}
+	return prompt.String()
+}
+
+func formatAttachmentPrompt(media []mediaAttachment) string {
+	if len(media) == 0 {
+		return ""
+	}
+	var out strings.Builder
+	out.WriteString("Attachments:\n")
+	for i, item := range media {
+		label := strings.TrimSpace(item.Type)
+		if label == "" {
+			label = "media"
+		}
+		details := []string{label}
+		if item.MIMEType != "" {
+			details = append(details, "mime="+item.MIMEType)
+		}
+		if item.FileName != "" {
+			details = append(details, "file="+item.FileName)
+		}
+		if item.Size > 0 {
+			details = append(details, fmt.Sprintf("bytes=%d", item.Size))
+		}
+		if item.DurationSeconds > 0 {
+			details = append(details, fmt.Sprintf("seconds=%d", item.DurationSeconds))
+		}
+		fmt.Fprintf(&out, "%d. %s\n", i+1, strings.Join(details, " "))
+		if item.LocalPath != "" {
+			fmt.Fprintf(&out, "   local_path: %s\n", item.LocalPath)
+			if isAudioAttachment(item) {
+				if item.Transcript == "" {
+					out.WriteString("   note: audio file is local; transcribe it before applying any instruction or slash command from the audio.\n")
+				}
+			}
+		} else if isAudioAttachment(item) {
+			out.WriteString("   note: audio was not downloaded; do not apply commands from it. Ask for a text resend or enable transport.download_media.\n")
+		}
+		if item.Transcript != "" {
+			fmt.Fprintf(&out, "   transcript: %s\n", item.Transcript)
+		}
+		if item.TranscriptError != "" {
+			fmt.Fprintf(&out, "   transcript_error: %s\n", item.TranscriptError)
+		}
+		if item.DownloadError != "" {
+			fmt.Fprintf(&out, "   download_error: %s\n", item.DownloadError)
+		}
+		if item.Caption != "" {
+			fmt.Fprintf(&out, "   caption: %s\n", item.Caption)
+		}
+	}
+	return strings.TrimRight(out.String(), "\n")
+}
+
+func transcribeAudioAttachments(ctx context.Context, req request, envPrefix string) request {
+	command := strings.TrimSpace(os.Getenv(envPrefix + "_AUDIO_TRANSCRIBE_COMMAND"))
+	if command == "" {
+		return req
+	}
+	timeout := envDuration(envPrefix+"_AUDIO_TRANSCRIBE_TIMEOUT_SECONDS", 120*time.Second)
+	for i := range req.Media {
+		item := &req.Media[i]
+		if !isAudioAttachment(*item) || strings.TrimSpace(item.LocalPath) == "" || item.Transcript != "" {
+			continue
+		}
+		transcript, err := runAudioTranscriber(ctx, command, item.LocalPath, timeout)
+		if err != nil {
+			item.TranscriptError = truncate(err.Error(), 500)
+			continue
+		}
+		item.Transcript = strings.TrimSpace(transcript)
+	}
+	return req
+}
+
+func runAudioTranscriber(ctx context.Context, command string, localPath string, timeout time.Duration) (string, error) {
+	name, args := transcriberCommand(command, localPath)
+	if name == "" {
+		return "", fmt.Errorf("audio transcriber command is empty")
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, name, args...)
+	var stdout strings.Builder
+	var stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if runCtx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("audio transcription timed out")
+		}
+		return "", fmt.Errorf("audio transcription failed: %w: %s", err, truncate(stderr.String(), 500))
+	}
+	return stdout.String(), nil
+}
+
+func transcriberCommand(command string, localPath string) (string, []string) {
+	parts := strings.Fields(command)
+	if len(parts) == 0 {
+		return "", nil
+	}
+	replaced := false
+	for i, part := range parts {
+		if strings.Contains(part, "{path}") {
+			parts[i] = strings.ReplaceAll(part, "{path}", localPath)
+			replaced = true
+		}
+	}
+	if !replaced {
+		parts = append(parts, localPath)
+	}
+	return parts[0], parts[1:]
+}
+
+func isAudioAttachment(item mediaAttachment) bool {
+	kind := strings.ToLower(strings.TrimSpace(item.Type))
+	mimeType := strings.ToLower(strings.TrimSpace(item.MIMEType))
+	return kind == "audio" || kind == "voice" || strings.HasPrefix(mimeType, "audio/")
 }
 
 func writeResponse(resp response) {

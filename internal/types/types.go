@@ -19,6 +19,16 @@ type Chat struct {
 	Allowed          bool
 }
 
+type GroupEvent struct {
+	ChatID               string
+	SenderID             string
+	LeftParticipantIDs   []string
+	JoinedParticipantIDs []string
+	ParticipantCount     int
+	Deleted              bool
+	Timestamp            time.Time
+}
+
 type IncomingMessage struct {
 	ID              string
 	ChatID          string
@@ -35,11 +45,16 @@ type IncomingMessage struct {
 }
 
 type MediaAttachment struct {
-	Type     string
-	MIMEType string
-	FileName string
-	Caption  string
-	Size     uint64
+	Type            string `json:"type"`
+	MIMEType        string `json:"mime_type,omitempty"`
+	FileName        string `json:"file_name,omitempty"`
+	Caption         string `json:"caption,omitempty"`
+	Size            uint64 `json:"size,omitempty"`
+	DurationSeconds uint32 `json:"duration_seconds,omitempty"`
+	LocalPath       string `json:"local_path,omitempty"`
+	DownloadError   string `json:"download_error,omitempty"`
+	Transcript      string `json:"transcript,omitempty"`
+	TranscriptError string `json:"transcript_error,omitempty"`
 }
 
 type SendOptions struct {

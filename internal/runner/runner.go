@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/endurantdevs/codex-whatsapp/internal/config"
+	"github.com/endurantdevs/codex-whatsapp/internal/types"
 )
 
 const ProtocolVersion = "1.0"
@@ -29,6 +30,7 @@ type MessageInfo struct {
 	Text            string `json:"text"`
 	Trigger         string `json:"trigger,omitempty"`
 	RawText         string `json:"raw_text"`
+	Media           []types.MediaAttachment `json:"media,omitempty"`
 	IsReplyToBridge bool   `json:"is_reply_to_bridge"`
 }
 
@@ -36,6 +38,7 @@ type SenderInfo struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"display_name,omitempty"`
 	IsAdmin     bool   `json:"is_admin"`
+	IsAllowed   bool   `json:"is_allowed"`
 }
 
 type SessionInfo struct {
@@ -68,6 +71,7 @@ type Request struct {
 	SenderID string      `json:"sender_id"`
 	Text     string      `json:"text"`
 	RawText  string      `json:"raw_text"`
+	Media    []types.MediaAttachment `json:"media,omitempty"`
 	Session  SessionInfo `json:"session"`
 }
 
@@ -79,9 +83,11 @@ type Response struct {
 }
 
 type Action struct {
-	Type  string `json:"type"`
-	Text  string `json:"text,omitempty"`
-	Emoji string `json:"emoji,omitempty"`
+	Type           string   `json:"type"`
+	Text           string   `json:"text,omitempty"`
+	Emoji          string   `json:"emoji,omitempty"`
+	Options        []string `json:"options,omitempty"`
+	ExpiresSeconds int      `json:"expires_seconds,omitempty"`
 }
 
 type Result struct {
