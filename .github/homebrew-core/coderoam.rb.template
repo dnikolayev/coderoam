@@ -3,7 +3,7 @@ class Coderoam < Formula
   homepage "https://github.com/dnikolayev/coderoam"
   url "https://github.com/dnikolayev/coderoam/archive/refs/tags/v{{VERSION}}.tar.gz"
   sha256 "{{SHA256}}"
-  license "MIT"
+  license all_of: ["MIT", "GPL-3.0-only"]
 
   head "https://github.com/dnikolayev/coderoam.git", branch: "main"
 

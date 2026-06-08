@@ -29,6 +29,8 @@ protocols.
   local agent clients.
 - Release workflow for native platform archives, checksums, CycloneDX SBOM, and
   a generated Homebrew-core candidate formula.
+- GPL-3.0 notice packaging for binary archives that include the WhatsApp
+  transport dependency graph.
 
 ### Changed
 

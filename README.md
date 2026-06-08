@@ -638,14 +638,16 @@ Before publishing a repository or release, check:
 
 - `README.md` explains the local/personal-use scope and unofficial transport
   risk.
-- `LICENSE`, `NOTICE`, and `THIRD_PARTY_LICENSES.md` are present.
+- `LICENSE`, `NOTICE`, `THIRD_PARTY_LICENSES.md`, and
+  `licenses/GPL-3.0.txt` are present.
 - `SECURITY.md`, `PRIVACY.md`, `SUPPORT.md`, `CONTRIBUTING.md`, and
   `CODE_OF_CONDUCT.md` are present.
 - Active-session coding workflows use `require_sender_allowlist = true`.
 - `.gitignore` excludes `bin/`, local profile data, logs, session databases,
   QR images, and other generated files.
 - CI runs `go test ./...`.
-- Release artifacts include checksums and third-party license notices.
+- Release artifacts include checksums, third-party license notices, GPL-3.0 text
+  for the WhatsApp transport dependency graph, and the tagged source archive.
 
 ## Safety Defaults
 

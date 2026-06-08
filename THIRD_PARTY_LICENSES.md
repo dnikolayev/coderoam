@@ -17,10 +17,11 @@ released dependency graph.
   Keep the WhatsApp transport in clearly separated packages and preserve MPL
   notices in source and binary distributions.
 - `go.mau.fi/libsignal` has a GPL-3.0 license file in the local module cache.
-  Verify binary distribution obligations with a release-time license scan before
-  publishing release artifacts.
+  The project accepts GPL-3.0 obligations for binary releases that include this
+  dependency. Release archives must include `licenses/GPL-3.0.txt`, this file,
+  `NOTICE`, `LICENSE`, and the tagged source archive for the exact release.
 - The local project license is MIT. The MIT license applies to this repository's
-  own code, not to third-party dependencies.
+  own code, not to third-party dependencies or the combined binary artifact.
 - Regenerate the release license report from the exact release commit and compare
   it to this inventory before publishing artifacts.
 

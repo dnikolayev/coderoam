@@ -100,6 +100,8 @@ jobs:
           go build -trimpath -ldflags "${ldflags}" -o "${artifact_dir}/echo-runner${ext}" ./examples/echo-runner
 
           cp README.md LICENSE NOTICE THIRD_PARTY_LICENSES.md SECURITY.md PRIVACY.md "${artifact_dir}/"
+          mkdir -p "${artifact_dir}/licenses"
+          cp licenses/GPL-3.0.txt "${artifact_dir}/licenses/"
 
       - name: Import Apple signing certificate
         if: runner.os == 'macOS' && env.APPLE_CERTIFICATE_BASE64 != '' && env.APPLE_DEVELOPER_ID != ''
@@ -262,6 +264,9 @@ jobs:
 
           This is a local-first bridge for continuing selected coding-agent
           sessions from mobile group chats.
+
+          Binary archives include GPL-3.0 notice text because the WhatsApp
+          transport dependency graph includes go.mau.fi/libsignal.
 
           Start after install with:
 

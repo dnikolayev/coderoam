@@ -41,9 +41,12 @@ Check that:
 - README scope and WhatsApp/Meta disclaimer are still accurate.
 - `docs/HOMEBREW.md` reflects the current formula/release path.
 - `CHANGELOG.md` has an entry for the release.
-- `LICENSE`, `NOTICE`, and `THIRD_PARTY_LICENSES.md` are included.
-- GPL/MPL dependency obligations have been reviewed against the release
-  artifact shape before publishing binaries.
+- `LICENSE`, `NOTICE`, `THIRD_PARTY_LICENSES.md`, and
+  `licenses/GPL-3.0.txt` are included in each binary archive.
+- The tagged source archive is attached to the GitHub release.
+- GPL-3.0 obligations are accepted for binary releases because the WhatsApp
+  transport dependency graph includes `go.mau.fi/libsignal`.
+- MPL dependency notices are preserved in source and binary distributions.
 - No profile data, session databases, QR images, logs, or local config secrets
   are staged.
 - `coderoam doctor` reports no broad profile/session permissions for the
@@ -60,6 +63,7 @@ Check that:
 - `coderoam_<version>_windows_amd64.zip`
 - `checksums.txt`
 - SBOM or module license report
+- `coderoam_<version>_source.tar.gz`
 - `coderoam-homebrew-core.rb`, after the tag exists
 
 ## macOS
@@ -94,10 +98,11 @@ native GitHub-hosted runners instead of cgo cross-compilation:
 - `ubuntu-24.04-arm` for linux arm64
 - `windows-latest` for windows amd64
 
-Each archive includes the user binaries, README, security/privacy docs, and
-license notices. The publish job combines archives, generates `checksums.txt`,
-creates a CycloneDX SBOM, downloads the tagged source tarball, and renders the
-Homebrew-core candidate formula with the real source `sha256`.
+Each archive includes the user binaries, README, security/privacy docs, license
+notices, and `licenses/GPL-3.0.txt`. The publish job combines archives,
+generates `checksums.txt`, creates a CycloneDX SBOM, downloads the tagged source
+tarball, and renders the Homebrew-core candidate formula with the real source
+`sha256`.
 
 Use manual dispatch for dry-run packaging before a tag:
 

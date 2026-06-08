@@ -12,5 +12,10 @@ under MPL-2.0. That transport is an unofficial WhatsApp Web / linked-device
 client implementation. This project is not affiliated with, endorsed by, or
 authorized by WhatsApp or Meta.
 
+The WhatsApp transport dependency graph includes go.mau.fi/libsignal, which is
+licensed under GPL-3.0. Binary release archives include the GPL-3.0 license text
+at licenses/GPL-3.0.txt and are published with the tagged source archive for the
+same release.
+
 WhatsApp and Meta are trademarks of their respective owners. Use of those names
 in this repository is only descriptive.
