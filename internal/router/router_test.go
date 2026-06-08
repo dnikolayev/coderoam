@@ -1,6 +1,7 @@
 package router
 
 import (
+	"database/sql"
 	"encoding/json"
 	"io"
 	"os"
@@ -19,7 +20,8 @@ import (
 func TestRouterProcessesAllowedTriggeredMessageAndDedupes(t *testing.T) {
 	cfg := config.Default()
 	cfg.App.Profile = "test"
-	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	dbPath := filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.App.DatabasePath = dbPath
 	cfg.Runner["default"] = config.RunnerConfig{
 		Mode:    "process-once-json",
 		Command: os.Args[0],
@@ -77,7 +79,8 @@ func TestRouterProcessesAllowedTriggeredMessageAndDedupes(t *testing.T) {
 func TestRouterIgnoresUnallowedGroup(t *testing.T) {
 	cfg := config.Default()
 	cfg.App.Profile = "test"
-	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	dbPath := filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.App.DatabasePath = dbPath
 	store, err := db.Open(cfg.App.DatabasePath)
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +157,7 @@ func TestRouterStoresActiveSessionMessageWithoutRunner(t *testing.T) {
 	if len(pendingOutbox) != 1 {
 		t.Fatalf("pending active outbox count = %d, want 1", len(pendingOutbox))
 	}
-	if !strings.Contains(pendingOutbox[0].Text, "for session codex-session") || !strings.Contains(pendingOutbox[0].Text, "Waiting for that active Codex session to claim") {
+	if !strings.Contains(pendingOutbox[0].Text, "for session codex-session") || !strings.Contains(pendingOutbox[0].Text, "Queued for the active Codex session to claim") {
 		t.Fatalf("ack text = %q", pendingOutbox[0].Text)
 	}
 	if len(ft.Read) != 0 {
@@ -176,7 +179,59 @@ func TestRouterStoresActiveSessionMessageWithoutRunner(t *testing.T) {
 	}
 }
 
-func TestRouterActiveSessionFallsBackToRunnerWithoutWatcher(t *testing.T) {
+func TestRouterIgnoresRecentLongOutboxEcho(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Runner["codex-active"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
+		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+	}
+	cfg.Groups = []config.GroupConfig{{
+		ID:      "1203630active@g.us",
+		Alias:   "codex-session",
+		Runner:  "codex-active",
+		Mode:    config.GroupModeActiveSession,
+		Enabled: true,
+	}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	echoText := strings.Repeat("previous bridge reply ", 8)
+	if err := store.RecordOutboxSent(t.Context(), "test", "1203630active@g.us", 123, echoText); err != nil {
+		t.Fatal(err)
+	}
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	result := r.Handle(t.Context(), types.IncomingMessage{
+		ID:        "msg-echo",
+		ChatID:    "1203630active@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "380506171414@s.whatsapp.net",
+		Text:      echoText,
+		RawText:   echoText,
+		Timestamp: time.Now(),
+	})
+	if !result.Ignored || result.Reason != "recent outbox echo ignored" {
+		t.Fatalf("echo result = %+v", result)
+	}
+	if len(ft.Sent) != 0 {
+		t.Fatalf("echo should not send: %+v", ft.Sent)
+	}
+	rows, err := store.ListActiveInbox(t.Context(), "test", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("echo should not enter active inbox: %+v", rows)
+	}
+}
+
+func TestRouterActiveSessionFallsBackToSafeRunnerWithoutWatcher(t *testing.T) {
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -224,7 +279,7 @@ func TestRouterActiveSessionFallsBackToRunnerWithoutWatcher(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(done) != 1 || done[0].ClaimedBySessionID != "codex-session" {
+	if len(done) != 1 || done[0].ExternalMessageID != "msg-active-fallback" || done[0].ClaimedBySessionID != "codex-session" {
 		t.Fatalf("done active inbox = %+v", done)
 	}
 	receipts, err := store.PendingActiveReadReceipts(t.Context(), "test", 10)
@@ -238,8 +293,153 @@ func TestRouterActiveSessionFallsBackToRunnerWithoutWatcher(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pendingOutbox) != 1 || !strings.Contains(pendingOutbox[0].Text, "No live watcher is connected") {
+	if len(pendingOutbox) != 1 || !strings.Contains(pendingOutbox[0].Text, "Continuing this session through runner codex-active") {
 		t.Fatalf("pending active outbox = %+v", pendingOutbox)
+	}
+}
+
+func TestRouterActiveSessionFallbackSkipsStaleClaimedRow(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	dbPath := filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.App.DatabasePath = dbPath
+	cfg.Runner["codex-active"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
+		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+	}
+	cfg.Groups = []config.GroupConfig{{
+		ID:      "1203630active@g.us",
+		Alias:   "codex-session",
+		Runner:  "codex-active",
+		Mode:    config.GroupModeActiveSession,
+		Enabled: true,
+	}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	previous := types.IncomingMessage{
+		ID:        "msg-previous",
+		ChatID:    "1203630active@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "380506171414@s.whatsapp.net",
+		Text:      "previous",
+		RawText:   "previous",
+		Timestamp: time.Now().Add(-time.Minute),
+	}
+	if _, _, err := store.StoreActiveInboxMessage(t.Context(), "test", "codex-session", "codex-session", previous); err != nil {
+		t.Fatal(err)
+	}
+	claimedPrevious, ok, err := store.ClaimNextActiveInboxForSession(t.Context(), "test", "codex-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected previous row to be claimed")
+	}
+	rawDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rawDB.Close()
+	if _, err := rawDB.ExecContext(t.Context(), `UPDATE active_inbox SET claimed_at = ? WHERE id = ?`, time.Now().Add(-time.Minute).Format(time.RFC3339Nano), claimedPrevious.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	result := r.Handle(t.Context(), types.IncomingMessage{
+		ID:        "msg-current",
+		ChatID:    "1203630active@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "380506171414@s.whatsapp.net",
+		Text:      "current",
+		RawText:   "current",
+		Timestamp: time.Now(),
+	})
+	if result.Ignored {
+		t.Fatalf("message was ignored: %s", result.Reason)
+	}
+	if len(ft.Sent) != 1 || ft.Sent[0].Text != "router: current" {
+		t.Fatalf("sent = %+v", ft.Sent)
+	}
+	claimed, err := store.ListActiveInbox(t.Context(), "test", "claimed", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 1 || claimed[0].ExternalMessageID != "msg-previous" {
+		t.Fatalf("claimed rows = %+v", claimed)
+	}
+	done, err := store.ListActiveInbox(t.Context(), "test", "done", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(done) != 1 || done[0].ExternalMessageID != "msg-current" {
+		t.Fatalf("done rows = %+v", done)
+	}
+}
+
+func TestRouterActiveSessionQueuesPinnedSessionRunnerWithoutWatcher(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Runner["codex-session"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
+		Env: map[string]string{
+			"GO_WANT_ROUTER_HELPER_PROCESS": "1",
+			"CODEX_RUNNER_SESSION_ID":       "019e9efc-2396-7da1-ad55-7cb73667a83d",
+		},
+	}
+	cfg.Groups = []config.GroupConfig{{
+		ID:      "1203630active@g.us",
+		Alias:   "codex-session",
+		Runner:  "codex-session",
+		Mode:    config.GroupModeActiveSession,
+		Enabled: true,
+	}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	result := r.Handle(t.Context(), types.IncomingMessage{
+		ID:        "msg-pinned-session",
+		ChatID:    "1203630active@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "380506171414@s.whatsapp.net",
+		Text:      "must not be swallowed",
+		RawText:   "must not be swallowed",
+		Timestamp: time.Now(),
+	})
+	if result.Ignored {
+		t.Fatalf("message was ignored: %s", result.Reason)
+	}
+	if result.Reason != "active inbox queued" {
+		t.Fatalf("reason = %q", result.Reason)
+	}
+	if len(ft.Sent) != 0 {
+		t.Fatalf("pinned session fallback sent unexpectedly: %+v", ft.Sent)
+	}
+	unread, err := store.ListActiveInbox(t.Context(), "test", "unread", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unread) != 1 || unread[0].ExternalMessageID != "msg-pinned-session" || unread[0].ClaimedBySessionID != "" {
+		t.Fatalf("unread active inbox = %+v", unread)
+	}
+	receipts, err := store.PendingActiveReadReceipts(t.Context(), "test", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(receipts) != 0 {
+		t.Fatalf("read receipts = %+v", receipts)
 	}
 }
 
@@ -293,6 +493,354 @@ func TestRouterActiveSessionDoesNotFallbackWithFreshWatcher(t *testing.T) {
 	}
 	if len(unread) != 1 || unread[0].ExternalMessageID != "msg-active-watch" {
 		t.Fatalf("unread = %+v", unread)
+	}
+}
+
+func TestRouterActiveSessionRoutesPendingChoiceReplyThroughSafeFallback(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Runner["codex-active"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
+		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+	}
+	cfg.Groups = []config.GroupConfig{{
+		ID:      "1203630active@g.us",
+		Alias:   "codex-session",
+		Runner:  "codex-active",
+		Mode:    config.GroupModeActiveSession,
+		Enabled: true,
+	}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	if _, err := store.CreatePendingInteraction(t.Context(), db.PendingInteractionRecord{
+		ProfileID:       "test",
+		ChatID:          "1203630active@g.us",
+		SenderID:        "380506171414@s.whatsapp.net",
+		RunnerID:        "codex-active",
+		SourceMessageID: 42,
+		Prompt:          "Choose next step.",
+		Options:         []string{"Plan", "Continue"},
+		ExpiresAt:       time.Now().Add(15 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reply := r.Handle(t.Context(), types.IncomingMessage{
+		ID:         "msg-active-choice-reply",
+		ChatID:     "1203630active@g.us",
+		ChatType:   types.ChatTypeGroup,
+		ChatName:   "Codex Session",
+		SenderID:   "380506171414@s.whatsapp.net",
+		SenderName: "Nick",
+		Text:       "2",
+		RawText:    "2",
+		Timestamp:  time.Now(),
+	})
+	if reply.Ignored {
+		t.Fatalf("choice reply ignored: %s", reply.Reason)
+	}
+	if len(ft.Sent) != 1 || ft.Sent[0].Text != "router: Continue" {
+		t.Fatalf("active-session choice reply fallback = %+v", ft.Sent)
+	}
+	if _, ok, err := store.FindPendingInteraction(t.Context(), "test", "1203630active@g.us", "380506171414@s.whatsapp.net"); err != nil {
+		t.Fatal(err)
+	} else if ok {
+		t.Fatal("pending interaction still active after answer")
+	}
+}
+
+func TestRouterPendingChoiceInvalidReplyKeepsInteraction(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Runner["default"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
+		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+	}
+	cfg.Groups = []config.GroupConfig{{ID: "1203630test@g.us", Alias: "test", Runner: "default", Enabled: true}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	r.Handle(t.Context(), types.IncomingMessage{
+		ID:        "msg-choice",
+		ChatID:    "1203630test@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "ask-choice",
+		RawText:   "@bridge ask-choice",
+		Timestamp: time.Now(),
+	})
+	result := r.Handle(t.Context(), types.IncomingMessage{
+		ID:        "msg-choice-bad",
+		ChatID:    "1203630test@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "9",
+		RawText:   "9",
+		Timestamp: time.Now(),
+	})
+	if result.Ignored || result.Reason != "pending interaction invalid choice" {
+		t.Fatalf("invalid choice result = %+v", result)
+	}
+	if len(ft.Sent) != 2 || !strings.Contains(ft.Sent[1].Text, "I did not recognize that choice") {
+		t.Fatalf("invalid choice reply = %+v", ft.Sent)
+	}
+	if _, ok, err := store.FindPendingInteraction(t.Context(), "test", "1203630test@g.us", "sender@s.whatsapp.net"); err != nil {
+		t.Fatal(err)
+	} else if !ok {
+		t.Fatal("pending interaction should remain active")
+	}
+}
+
+func TestRouterPendingFreeTextAnswerRoutesToRunner(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Runner["default"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
+		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+	}
+	cfg.Groups = []config.GroupConfig{{ID: "1203630test@g.us", Alias: "test", Runner: "default", Enabled: true}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	r.Handle(t.Context(), types.IncomingMessage{
+		ID:        "msg-input",
+		ChatID:    "1203630test@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "ask-input",
+		RawText:   "@bridge ask-input",
+		Timestamp: time.Now(),
+	})
+	if len(ft.Sent) != 1 || !strings.Contains(ft.Sent[0].Text, "Reply with your answer") {
+		t.Fatalf("free-text prompt = %+v", ft.Sent)
+	}
+	reply := r.Handle(t.Context(), types.IncomingMessage{
+		ID:        "msg-input-reply",
+		ChatID:    "1203630test@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "ship the text menu",
+		RawText:   "ship the text menu",
+		Timestamp: time.Now(),
+	})
+	if reply.Ignored {
+		t.Fatalf("free-text reply ignored: %s", reply.Reason)
+	}
+	if len(ft.Sent) != 2 || ft.Sent[1].Text != "router: ship the text menu" {
+		t.Fatalf("free-text answer response = %+v", ft.Sent)
+	}
+}
+
+func TestRouterPendingApprovalUsesDefaultOptions(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Runner["default"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
+		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+	}
+	cfg.Groups = []config.GroupConfig{{ID: "1203630test@g.us", Alias: "test", Runner: "default", Enabled: true}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	r.Handle(t.Context(), types.IncomingMessage{
+		ID:        "msg-approval",
+		ChatID:    "1203630test@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "ask-approval",
+		RawText:   "@bridge ask-approval",
+		Timestamp: time.Now(),
+	})
+	if len(ft.Sent) != 1 || !strings.Contains(ft.Sent[0].Text, "1. Approve") || !strings.Contains(ft.Sent[0].Text, "2. Reject") {
+		t.Fatalf("approval prompt = %+v", ft.Sent)
+	}
+	reply := r.Handle(t.Context(), types.IncomingMessage{
+		ID:        "msg-approval-reply",
+		ChatID:    "1203630test@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "1",
+		RawText:   "1",
+		Timestamp: time.Now(),
+	})
+	if reply.Ignored {
+		t.Fatalf("approval reply ignored: %s", reply.Reason)
+	}
+	if len(ft.Sent) != 2 || ft.Sent[1].Text != "router: Approve" {
+		t.Fatalf("approval response = %+v", ft.Sent)
+	}
+}
+
+func TestRouterExpiredPendingInteractionDoesNotBypassTrigger(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Runner["default"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
+		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+	}
+	cfg.Groups = []config.GroupConfig{{ID: "1203630test@g.us", Alias: "test", Runner: "default", Enabled: true}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	if _, err := store.CreatePendingInteraction(t.Context(), db.PendingInteractionRecord{
+		ProfileID: "test",
+		ChatID:    "1203630test@g.us",
+		SenderID:  "sender@s.whatsapp.net",
+		RunnerID:  "default",
+		Prompt:    "Expired question.",
+		Options:   []string{"Continue", "Stop"},
+		ExpiresAt: time.Now().Add(-time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := r.Handle(t.Context(), types.IncomingMessage{
+		ID:        "msg-expired-reply",
+		ChatID:    "1203630test@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "1",
+		RawText:   "1",
+		Timestamp: time.Now(),
+	})
+	if !result.Ignored || result.Reason != "trigger not matched" {
+		t.Fatalf("expired reply result = %+v", result)
+	}
+	if len(ft.Sent) != 0 {
+		t.Fatalf("expired interaction sent response = %+v", ft.Sent)
+	}
+}
+
+func TestRouterDuplicatePendingReplyDoesNotRunTwice(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Runner["default"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
+		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+	}
+	cfg.Groups = []config.GroupConfig{{ID: "1203630test@g.us", Alias: "test", Runner: "default", Enabled: true}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	if _, err := store.CreatePendingInteraction(t.Context(), db.PendingInteractionRecord{
+		ProfileID: "test",
+		ChatID:    "1203630test@g.us",
+		SenderID:  "sender@s.whatsapp.net",
+		RunnerID:  "default",
+		Prompt:    "Choose next step.",
+		Options:   []string{"Plan", "Continue"},
+		ExpiresAt: time.Now().Add(15 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	msg := types.IncomingMessage{
+		ID:        "msg-choice-reply-dup",
+		ChatID:    "1203630test@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "2",
+		RawText:   "2",
+		Timestamp: time.Now(),
+	}
+	first := r.Handle(t.Context(), msg)
+	if first.Ignored {
+		t.Fatalf("first reply ignored: %s", first.Reason)
+	}
+	second := r.Handle(t.Context(), msg)
+	if !second.Ignored {
+		t.Fatalf("duplicate reply was not ignored: %+v", second)
+	}
+	if len(ft.Sent) != 1 || ft.Sent[0].Text != "router: Continue" {
+		t.Fatalf("duplicate reply sends = %+v", ft.Sent)
+	}
+}
+
+func TestRouterDetectsNumberedQuestionAsPendingInteraction(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Runner["default"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
+		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+	}
+	cfg.Groups = []config.GroupConfig{{ID: "1203630test@g.us", Alias: "test", Runner: "default", Enabled: true}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	r.Handle(t.Context(), types.IncomingMessage{
+		ID:        "msg-numbered",
+		ChatID:    "1203630test@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "ask-numbered",
+		RawText:   "@bridge ask-numbered",
+		Timestamp: time.Now(),
+	})
+	if len(ft.Sent) != 1 || !strings.Contains(ft.Sent[0].Text, "1. Alpha") {
+		t.Fatalf("numbered prompt = %+v", ft.Sent)
+	}
+	reply := r.Handle(t.Context(), types.IncomingMessage{
+		ID:        "msg-numbered-reply",
+		ChatID:    "1203630test@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "2",
+		RawText:   "2",
+		Timestamp: time.Now(),
+	})
+	if reply.Ignored {
+		t.Fatalf("numbered reply ignored: %s", reply.Reason)
+	}
+	if len(ft.Sent) != 2 || ft.Sent[1].Text != "router: Beta" {
+		t.Fatalf("sent after numbered reply = %+v", ft.Sent)
 	}
 }
 
@@ -356,10 +904,26 @@ func TestRouterHelperProcess(t *testing.T) {
 	body, _ := io.ReadAll(os.Stdin)
 	var req runner.Request
 	_ = json.Unmarshal(body, &req)
+	actions := []runner.Action{{Type: "reply", Text: "router: " + req.Text}}
+	switch req.Text {
+	case "ask-choice":
+		actions = []runner.Action{{
+			Type:           "request_choice",
+			Text:           "Choose how Codex should continue.",
+			Options:        []string{"Plan", "Continue"},
+			ExpiresSeconds: 60,
+		}}
+	case "ask-input":
+		actions = []runner.Action{{Type: "request_input", Text: "What should I send back?"}}
+	case "ask-approval":
+		actions = []runner.Action{{Type: "request_approval", Text: "Approve the current plan?"}}
+	case "ask-numbered":
+		actions = []runner.Action{{Type: "reply", Text: "Choose one?\n1. Alpha\n2. Beta"}}
+	}
 	_ = json.NewEncoder(os.Stdout).Encode(runner.Response{
 		Version:   runner.ProtocolVersion,
 		RequestID: req.RequestID,
-		Actions:   []runner.Action{{Type: "reply", Text: "router: " + req.Text}},
+		Actions:   actions,
 	})
 	os.Exit(0)
 }

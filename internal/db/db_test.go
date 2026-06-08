@@ -132,7 +132,15 @@ func TestActiveInboxDedupesClaimsAndMarksDone(t *testing.T) {
 		SenderName: "Nick",
 		Text:       "hello from whatsapp",
 		RawText:    "hello from whatsapp",
-		Timestamp:  time.Now(),
+		Media: []types.MediaAttachment{{
+			Type:            "voice",
+			MIMEType:        "audio/ogg; codecs=opus",
+			Size:            777,
+			DurationSeconds: 3,
+			LocalPath:       filepath.Join(t.TempDir(), "voice.ogg"),
+			Transcript:      "hello from voice",
+		}},
+		Timestamp: time.Now(),
 	}
 	first, fresh, err := store.StoreActiveInboxMessage(t.Context(), "test", "codex-session", "codex-session", msg)
 	if err != nil {
@@ -167,6 +175,9 @@ func TestActiveInboxDedupesClaimsAndMarksDone(t *testing.T) {
 	if claimed.SessionID != "codex-session" || claimed.ClaimedBySessionID != "codex-session" {
 		t.Fatalf("claimed session fields = %+v", claimed)
 	}
+	if len(claimed.Media) != 1 || claimed.Media[0].Type != "voice" || claimed.Media[0].LocalPath == "" || claimed.Media[0].Transcript != "hello from voice" {
+		t.Fatalf("claimed media = %+v", claimed.Media)
+	}
 	receipts, err := store.PendingActiveReadReceipts(t.Context(), "test", 10)
 	if err != nil {
 		t.Fatal(err)
@@ -193,6 +204,136 @@ func TestActiveInboxDedupesClaimsAndMarksDone(t *testing.T) {
 	}
 	if counts["done"] != 1 {
 		t.Fatalf("done count = %d, want 1", counts["done"])
+	}
+}
+
+func TestActiveInboxRequeueClaimed(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	msg := types.IncomingMessage{
+		ID:        "wa-requeue",
+		ChatID:    "chat@g.us",
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "recover me",
+		Timestamp: time.Now(),
+	}
+	if _, _, err := store.StoreActiveInboxMessage(t.Context(), "test", "codex-session", "codex-session", msg); err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := store.ClaimNextActiveInboxForSession(t.Context(), "test", "codex-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected claimed row")
+	}
+	requeued, err := store.RequeueActiveInbox(t.Context(), "test", claimed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !requeued {
+		t.Fatal("expected claimed row to be requeued")
+	}
+	unread, err := store.ListActiveInbox(t.Context(), "test", "unread", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unread) != 1 || unread[0].ID != claimed.ID || unread[0].ClaimedBySessionID != "" || unread[0].ClaimedAt != nil {
+		t.Fatalf("unread after requeue = %+v", unread)
+	}
+}
+
+func TestActiveInboxRecoversAbandonedClaims(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	msg := types.IncomingMessage{
+		ID:        "wa-abandoned",
+		ChatID:    "chat@g.us",
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "recover after restart",
+		Timestamp: time.Now(),
+	}
+	if _, _, err := store.StoreActiveInboxMessage(t.Context(), "test", "codex-session", "codex-session", msg); err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := store.ClaimNextActiveInboxForSession(t.Context(), "test", "codex-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected claimed row")
+	}
+	oldClaim := time.Now().Add(-time.Minute)
+	if _, err := store.db.ExecContext(t.Context(), `UPDATE active_inbox SET claimed_at = ? WHERE id = ?`, formatTime(oldClaim), claimed.ID); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := store.RecoverAbandonedActiveInbox(t.Context(), "test", "codex-session", 15*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered != 1 {
+		t.Fatalf("recovered = %d, want 1", recovered)
+	}
+	unread, err := store.ListActiveInbox(t.Context(), "test", "unread", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unread) != 1 || unread[0].ID != claimed.ID || unread[0].ClaimedAt != nil || unread[0].ClaimedBySessionID != "" {
+		t.Fatalf("unread after recovery = %+v", unread)
+	}
+}
+
+func TestActiveInboxRecoveryKeepsLiveWatcherClaims(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	msg := types.IncomingMessage{
+		ID:        "wa-live-watcher",
+		ChatID:    "chat@g.us",
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "do not recover",
+		Timestamp: time.Now(),
+	}
+	if _, _, err := store.StoreActiveInboxMessage(t.Context(), "test", "codex-session", "codex-session", msg); err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := store.ClaimNextActiveInboxForSession(t.Context(), "test", "codex-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected claimed row")
+	}
+	oldClaim := time.Now().Add(-time.Minute)
+	if _, err := store.db.ExecContext(t.Context(), `UPDATE active_inbox SET claimed_at = ? WHERE id = ?`, formatTime(oldClaim), claimed.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, acquired, err := store.AcquireActiveWatcher(t.Context(), "test", "codex-session", "host:111", 111, 15*time.Second, false); err != nil {
+		t.Fatal(err)
+	} else if !acquired {
+		t.Fatal("expected watcher lock")
+	}
+	recovered, err := store.RecoverAbandonedActiveInbox(t.Context(), "test", "codex-session", 15*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered != 0 {
+		t.Fatalf("recovered = %d, want 0", recovered)
+	}
+	claimedRows, err := store.ListActiveInbox(t.Context(), "test", "claimed", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimedRows) != 1 || claimedRows[0].ID != claimed.ID {
+		t.Fatalf("claimed after recovery = %+v", claimedRows)
 	}
 }
 
@@ -285,6 +426,20 @@ func TestActiveWatcherExclusiveLock(t *testing.T) {
 	stale := time.Now().Add(-time.Minute)
 	if _, err := store.db.ExecContext(t.Context(), `UPDATE active_watchers SET heartbeat_at = ? WHERE profile_id = ? AND session_id = ?`, formatTime(stale), "test", "codex-session"); err != nil {
 		t.Fatal(err)
+	}
+	expired, err := store.ExpireActiveWatchers(t.Context(), "test", 15*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expired != 1 {
+		t.Fatalf("expired watchers = %d, want 1", expired)
+	}
+	staleRecord, err := store.GetActiveWatcher(t.Context(), "test", "codex-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staleRecord.Status != "stale" {
+		t.Fatalf("stale status = %q, want stale", staleRecord.Status)
 	}
 	replacement, acquired, err := store.AcquireActiveWatcher(t.Context(), "test", "codex-session", "host:222", 222, 15*time.Second, false)
 	if err != nil {

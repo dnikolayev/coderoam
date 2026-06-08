@@ -59,6 +59,8 @@ type ActiveInboxRecord struct {
 	ExternalMessageID  string
 	Text               string
 	RawText            string
+	RawJSON            string
+	Media              []types.MediaAttachment
 	Status             string
 	ReceivedAt         time.Time
 	ClaimedAt          *time.Time
@@ -102,8 +104,26 @@ type ActiveWatcherRecord struct {
 	HeartbeatAt time.Time
 }
 
-const activeInboxColumns = `id, profile_id, chat_id, chat_alias, session_id, sender_id, sender_name, external_message_id, text, raw_text, status, received_at, claimed_at, claimed_by_session_id, done_at`
+type PendingInteractionRecord struct {
+	ID              int64
+	ProfileID       string
+	ChatID          string
+	SenderID        string
+	RunnerID        string
+	SourceMessageID int64
+	Prompt          string
+	Options         []string
+	Status          string
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
+	AnsweredAt      *time.Time
+	SelectedIndex   int
+	SelectedText    string
+}
+
+const activeInboxColumns = `id, profile_id, chat_id, chat_alias, session_id, sender_id, sender_name, external_message_id, text, raw_text, raw_json, status, received_at, claimed_at, claimed_by_session_id, done_at`
 const activeWatcherColumns = `profile_id, session_id, consumer_id, pid, status, started_at, heartbeat_at`
+const pendingInteractionColumns = `id, profile_id, chat_id, sender_id, runner_id, source_message_id, prompt, options_json, status, created_at, expires_at, answered_at, selected_index, selected_text`
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -260,6 +280,22 @@ func (s *Store) Migrate(ctx context.Context) error {
 			started_at TEXT NOT NULL,
 			heartbeat_at TEXT NOT NULL,
 			PRIMARY KEY(profile_id, session_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS pending_interactions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			profile_id TEXT NOT NULL,
+			chat_id TEXT NOT NULL,
+			sender_id TEXT NOT NULL,
+			runner_id TEXT NOT NULL,
+			source_message_id INTEGER NOT NULL DEFAULT 0,
+			prompt TEXT NOT NULL DEFAULT '',
+			options_json TEXT NOT NULL DEFAULT '[]',
+			status TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			expires_at TEXT NOT NULL,
+			answered_at TEXT,
+			selected_index INTEGER NOT NULL DEFAULT 0,
+			selected_text TEXT NOT NULL DEFAULT ''
 		)`,
 	}
 	for _, statement := range statements {
@@ -499,6 +535,8 @@ func (s *Store) StoreActiveInboxMessage(ctx context.Context, profileID, chatAlia
 		ExternalMessageID: msg.ID,
 		Text:              text,
 		RawText:           rawText,
+		RawJSON:           string(raw),
+		Media:             msg.Media,
 		Status:            "unread",
 		ReceivedAt:        msg.Timestamp,
 	}, true, nil
@@ -607,6 +645,111 @@ func (s *Store) MarkActiveInboxDone(ctx context.Context, profileID string, id in
 	return err
 }
 
+func (s *Store) RequeueActiveInbox(ctx context.Context, profileID string, id int64) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE active_inbox
+		SET status = 'unread', claimed_at = NULL, claimed_by_session_id = '', done_at = NULL
+		WHERE profile_id = ? AND id = ? AND status = 'claimed'`, profileID, id)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
+func (s *Store) RecoverAbandonedActiveInbox(ctx context.Context, profileID, sessionID string, staleAfter time.Duration) (int, error) {
+	if staleAfter <= 0 {
+		staleAfter = 15 * time.Second
+	}
+	cutoff := formatTime(time.Now().Add(-staleAfter))
+	sessionID = strings.TrimSpace(sessionID)
+	query := `UPDATE active_inbox
+		SET status = 'unread', claimed_at = NULL, claimed_by_session_id = '', done_at = NULL
+		WHERE profile_id = ?
+			AND status = 'claimed'
+			AND (claimed_at IS NULL OR claimed_at <= ?)
+			AND (
+				claimed_by_session_id = ''
+				OR NOT EXISTS (
+					SELECT 1 FROM active_watchers
+					WHERE active_watchers.profile_id = active_inbox.profile_id
+						AND active_watchers.session_id = active_inbox.claimed_by_session_id
+						AND active_watchers.status = 'active'
+						AND active_watchers.heartbeat_at > ?
+				)
+			)`
+	args := []any{profileID, cutoff, cutoff}
+	if sessionID != "" {
+		query += ` AND (session_id = ? OR claimed_by_session_id = ?)`
+		args = append(args, sessionID, sessionID)
+	}
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(affected), nil
+}
+
+func (s *Store) CreatePendingInteraction(ctx context.Context, record PendingInteractionRecord) (int64, error) {
+	now := time.Now()
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = now
+	}
+	if record.ExpiresAt.IsZero() {
+		record.ExpiresAt = now.Add(15 * time.Minute)
+	}
+	optionsJSON, err := json.Marshal(record.Options)
+	if err != nil {
+		return 0, err
+	}
+	result, err := s.db.ExecContext(ctx, `INSERT INTO pending_interactions
+		(profile_id, chat_id, sender_id, runner_id, source_message_id, prompt, options_json, status, created_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+		record.ProfileID, record.ChatID, record.SenderID, record.RunnerID, record.SourceMessageID,
+		record.Prompt, string(optionsJSON), formatTime(record.CreatedAt), formatTime(record.ExpiresAt))
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+func (s *Store) FindPendingInteraction(ctx context.Context, profileID, chatID, senderID string) (PendingInteractionRecord, bool, error) {
+	now := formatTime(time.Now())
+	row := s.db.QueryRowContext(ctx, `SELECT `+pendingInteractionColumns+`
+		FROM pending_interactions
+		WHERE profile_id = ? AND chat_id = ? AND sender_id = ? AND status = 'pending' AND expires_at > ?
+		ORDER BY id LIMIT 1`, profileID, chatID, senderID, now)
+	record, err := scanPendingInteraction(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PendingInteractionRecord{}, false, nil
+	}
+	if err != nil {
+		return PendingInteractionRecord{}, false, err
+	}
+	return record, true, nil
+}
+
+func (s *Store) MarkPendingInteractionAnswered(ctx context.Context, profileID string, id int64, selectedIndex int, selectedText string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE pending_interactions
+		SET status = 'answered', answered_at = ?, selected_index = ?, selected_text = ?
+		WHERE profile_id = ? AND id = ? AND status = 'pending'`,
+		formatTime(time.Now()), selectedIndex, selectedText, profileID, id)
+	return err
+}
+
+func (s *Store) ExpirePendingInteractions(ctx context.Context, profileID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE pending_interactions
+		SET status = 'expired'
+		WHERE profile_id = ? AND status = 'pending' AND expires_at <= ?`, profileID, formatTime(time.Now()))
+	return err
+}
+
 func (s *Store) ActiveInboxCounts(ctx context.Context, profileID string) (map[string]int, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT status, COUNT(*) FROM active_inbox WHERE profile_id = ? GROUP BY status`, profileID)
 	if err != nil {
@@ -712,6 +855,20 @@ func (s *Store) ActiveWatcherFresh(ctx context.Context, profileID, sessionID str
 		return record, true, nil
 	}
 	return record, false, nil
+}
+
+func (s *Store) ExpireActiveWatchers(ctx context.Context, profileID string, staleAfter time.Duration) (int64, error) {
+	if staleAfter <= 0 {
+		staleAfter = 15 * time.Second
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE active_watchers
+		SET status = 'stale'
+		WHERE profile_id = ? AND status = 'active' AND heartbeat_at <= ?`,
+		profileID, formatTime(time.Now().Add(-staleAfter)))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 func (s *Store) ListActiveWatchers(ctx context.Context, profileID string) ([]ActiveWatcherRecord, error) {
@@ -940,6 +1097,59 @@ func (s *Store) RecordOutboxFailure(ctx context.Context, profileID, chatID strin
 	return err
 }
 
+func (s *Store) RecentlySentText(ctx context.Context, profileID, chatID, text string, since time.Time) (bool, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false, nil
+	}
+	sinceText := formatTime(since)
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(*) FROM outbox WHERE profile_id = ? AND chat_id = ? AND status = 'sent' AND sent_at >= ? AND TRIM(text) = ?)
+		+
+		(SELECT COUNT(*) FROM active_outbox WHERE profile_id = ? AND chat_id = ? AND status = 'sent' AND sent_at >= ? AND TRIM(text) = ?)`,
+		profileID, chatID, sinceText, text,
+		profileID, chatID, sinceText, text).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (s *Store) DeleteChatData(ctx context.Context, profileID, chatID string) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	total := 0
+	statements := []string{
+		`DELETE FROM active_inbox WHERE profile_id = ? AND chat_id = ?`,
+		`DELETE FROM active_outbox WHERE profile_id = ? AND chat_id = ?`,
+		`DELETE FROM active_read_receipts WHERE profile_id = ? AND chat_id = ?`,
+		`DELETE FROM pending_interactions WHERE profile_id = ? AND chat_id = ?`,
+		`DELETE FROM outbox WHERE profile_id = ? AND chat_id = ?`,
+		`DELETE FROM runner_invocations WHERE profile_id = ? AND chat_id = ?`,
+		`DELETE FROM messages WHERE profile_id = ? AND chat_id = ?`,
+		`DELETE FROM chats WHERE profile_id = ? AND id = ?`,
+	}
+	for _, statement := range statements {
+		result, err := tx.ExecContext(ctx, statement, profileID, chatID)
+		if err != nil {
+			return 0, err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		total += int(affected)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
 func (s *Store) PendingOutboxCount(ctx context.Context) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox WHERE status IN ('pending', 'failed_retryable')`).Scan(&count)
@@ -990,9 +1200,15 @@ func scanActiveInbox(row scanner) (ActiveInboxRecord, error) {
 	var claimedAt sql.NullString
 	var doneAt sql.NullString
 	err := row.Scan(&record.ID, &record.ProfileID, &record.ChatID, &record.ChatAlias, &record.SessionID, &record.SenderID, &record.SenderName,
-		&record.ExternalMessageID, &record.Text, &record.RawText, &record.Status, &receivedAt, &claimedAt, &record.ClaimedBySessionID, &doneAt)
+		&record.ExternalMessageID, &record.Text, &record.RawText, &record.RawJSON, &record.Status, &receivedAt, &claimedAt, &record.ClaimedBySessionID, &doneAt)
 	if err != nil {
 		return ActiveInboxRecord{}, err
+	}
+	if record.RawJSON != "" {
+		var msg types.IncomingMessage
+		if err := json.Unmarshal([]byte(record.RawJSON), &msg); err == nil {
+			record.Media = msg.Media
+		}
 	}
 	if parsed, err := time.Parse(time.RFC3339Nano, receivedAt); err == nil {
 		record.ReceivedAt = parsed
@@ -1064,6 +1280,33 @@ func scanActiveReadReceipt(row scanner) (ActiveReadReceiptRecord, error) {
 	if sentAt.Valid {
 		if parsed, err := time.Parse(time.RFC3339Nano, sentAt.String); err == nil {
 			record.SentAt = &parsed
+		}
+	}
+	return record, nil
+}
+
+func scanPendingInteraction(row scanner) (PendingInteractionRecord, error) {
+	var record PendingInteractionRecord
+	var optionsJSON string
+	var createdAt string
+	var expiresAt string
+	var answeredAt sql.NullString
+	err := row.Scan(&record.ID, &record.ProfileID, &record.ChatID, &record.SenderID, &record.RunnerID,
+		&record.SourceMessageID, &record.Prompt, &optionsJSON, &record.Status, &createdAt, &expiresAt,
+		&answeredAt, &record.SelectedIndex, &record.SelectedText)
+	if err != nil {
+		return PendingInteractionRecord{}, err
+	}
+	_ = json.Unmarshal([]byte(optionsJSON), &record.Options)
+	if parsed, err := time.Parse(time.RFC3339Nano, createdAt); err == nil {
+		record.CreatedAt = parsed
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, expiresAt); err == nil {
+		record.ExpiresAt = parsed
+	}
+	if answeredAt.Valid {
+		if parsed, err := time.Parse(time.RFC3339Nano, answeredAt.String); err == nil {
+			record.AnsweredAt = &parsed
 		}
 	}
 	return record, nil
