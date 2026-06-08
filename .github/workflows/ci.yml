@@ -28,4 +28,10 @@ jobs:
         run: go test ./...
 
       - name: Build
-        run: go build -o bin/coderoam ./cmd/coderoam
+        run: |
+          go build -o bin/coderoam ./cmd/coderoam
+          go build -o bin/coderoam-transcribe ./cmd/coderoam-transcribe
+          go build -o bin/agent-runner ./examples/agent-runner
+          go build -o bin/codex-runner ./examples/codex-runner
+          go build -o bin/claude-runner ./examples/claude-runner
+          go build -o bin/echo-runner ./examples/echo-runner

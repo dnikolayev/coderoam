@@ -69,7 +69,7 @@ func TestBuildRunnerPresetEnablesImportantOnlyForResumableAssistants(t *testing.
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			runner, err := buildRunnerPreset(tt.name, t.TempDir(), 120, "", "", tt.sessionID)
+			runner, err := buildRunnerPreset(tt.name, t.TempDir(), 120, "", "", tt.sessionID, "", nil, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -86,7 +86,7 @@ func TestBuildRunnerPresetEnablesImportantOnlyForResumableAssistants(t *testing.
 func TestBuildRunnerPresetCodexCodingPresetsAreNonInteractive(t *testing.T) {
 	for _, preset := range []string{"codex-code", "codex-active", "codex-session"} {
 		t.Run(preset, func(t *testing.T) {
-			runner, err := buildRunnerPreset(preset, t.TempDir(), 120, "", "", "session-id")
+			runner, err := buildRunnerPreset(preset, t.TempDir(), 120, "", "", "session-id", "", nil, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -94,6 +94,100 @@ func TestBuildRunnerPresetCodexCodingPresetsAreNonInteractive(t *testing.T) {
 				t.Fatalf("CODEX_RUNNER_APPROVAL_POLICY = %q, want never", got)
 			}
 		})
+	}
+}
+
+func TestBuildRunnerPresetAgentCliPresetsUseGenericRunner(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		args    string
+	}{
+		{name: "opencode", command: "opencode", args: `["run"]`},
+		{name: "gemini", command: "gemini", args: `["-p"]`},
+		{name: "agent", command: "my-agent", args: `["--once"]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner, err := buildRunnerPreset(tt.name, t.TempDir(), 120, "", "", "", tt.command, []string{"--once"}, "")
+			if tt.name != "agent" {
+				runner, err = buildRunnerPreset(tt.name, t.TempDir(), 120, "", "", "", "", nil, "")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasSuffix(runner.Command, "agent-runner") {
+				t.Fatalf("command = %q, want agent-runner", runner.Command)
+			}
+			if got := runner.Env["AGENT_RUNNER_COMMAND"]; got != tt.command {
+				t.Fatalf("AGENT_RUNNER_COMMAND = %q, want %q", got, tt.command)
+			}
+			if got := runner.Env["AGENT_RUNNER_ARGS_JSON"]; got != tt.args {
+				t.Fatalf("AGENT_RUNNER_ARGS_JSON = %q, want %q", got, tt.args)
+			}
+			if got := runner.Env["AGENT_RUNNER_IMPORTANT_ONLY"]; got != "true" {
+				t.Fatalf("AGENT_RUNNER_IMPORTANT_ONLY = %q, want true", got)
+			}
+		})
+	}
+}
+
+func TestVersionCommandPrintsVersion(t *testing.T) {
+	state := &cliState{}
+	cmd := state.versionCommand()
+	out, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "coderoam dev") {
+		t.Fatalf("version output = %q", out)
+	}
+}
+
+func TestSetupCommandPrintsMessengerConnectionHowTo(t *testing.T) {
+	state := &cliState{}
+	cmd := state.setupCommand()
+	out, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"coderoam needs a connected messenger",
+		"coderoam auth login --profile bot --qr",
+		"coderoam active start",
+		"coderoam inbox watch --format prompt --session-id codex-session",
+		"https://github.com/dnikolayev/coderoam/blob/main/docs/SETUP.md",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("setup output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestStatusShowsSetupHintWhenMessengerNotLinked(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "coderoam.sqlite3")
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	state := &cliState{configPath: path}
+	out, err := captureStdout(t, func() error {
+		return state.printStatus(t.Context())
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"transport: not_configured",
+		"setup_next: run `coderoam setup`",
+		"https://github.com/dnikolayev/coderoam/blob/main/docs/SETUP.md",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("status output missing %q:\n%s", want, out)
+		}
 	}
 }
 

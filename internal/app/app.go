@@ -32,6 +32,12 @@ import (
 	"github.com/dnikolayev/coderoam/internal/types"
 )
 
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 type cliState struct {
 	configPath string
 }
@@ -72,6 +78,8 @@ The WhatsApp Web transport is unofficial and may break or put the linked account
 		state.statusCommand(),
 		state.healthCommand(),
 		state.doctorCommand(),
+		state.setupCommand(),
+		state.versionCommand(),
 		state.explainLastCommand(),
 		state.pauseCommand(),
 		state.resumeCommand(),
@@ -459,6 +467,42 @@ func (s *cliState) healthCommand() *cobra.Command {
 	}
 }
 
+func (s *cliState) versionCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print coderoam version information",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Println(versionText())
+			return nil
+		},
+	}
+}
+
+func (s *cliState) setupCommand() *cobra.Command {
+	var messenger string
+	cmd := &cobra.Command{
+		Use:   "setup",
+		Short: "Show the commands required before mobile chat sessions can work",
+		Long: `Show the local setup path for connecting a messenger account, configuring an
+agent runner, and creating or binding a dedicated session group.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			messenger = strings.ToLower(strings.TrimSpace(messenger))
+			if messenger == "" {
+				messenger = "whatsapp"
+			}
+			if messenger != "whatsapp" {
+				fmt.Printf("coderoam does not include a %s transport yet.\n", messenger)
+				fmt.Println("Connect WhatsApp now, or add/configure another transport when it is implemented.")
+				fmt.Println()
+			}
+			fmt.Print(setupHowTo())
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&messenger, "messenger", "whatsapp", "messenger transport to configure")
+	return cmd
+}
+
 func (s *cliState) explainLastCommand() *cobra.Command {
 	var chatValue string
 	cmd := &cobra.Command{
@@ -548,6 +592,9 @@ func (s *cliState) doctorCommand() *cobra.Command {
 			}
 			if _, err := os.Stat(config.SessionStorePath(cfg.App.Profile)); err != nil {
 				fmt.Printf("whatsapp_session_db: missing (%s)\n", config.SessionStorePath(cfg.App.Profile))
+				fmt.Println("whatsapp_auth: not linked")
+				fmt.Println(setupNextLine())
+				return nil
 			} else {
 				fmt.Printf("whatsapp_session_db: present (%s)\n", config.SessionStorePath(cfg.App.Profile))
 			}
@@ -560,8 +607,9 @@ func (s *cliState) doctorCommand() *cobra.Command {
 					fmt.Printf("whatsapp_auth: error (%s)\n", statusErr)
 				} else if status.Account == "" {
 					fmt.Println("whatsapp_auth: not linked")
+					fmt.Println(setupNextLine())
 				} else {
-					fmt.Printf("whatsapp_auth: linked account=%s connected=%t\n", logging.Redact(status.Account), status.Connected)
+					fmt.Printf("whatsapp_auth: linked account=%s\n", logging.Redact(status.Account))
 				}
 			}
 			for id, runnerCfg := range cfg.Runner {
@@ -1146,10 +1194,13 @@ func (s *cliState) runnersCommand() *cobra.Command {
 	var presetModel string
 	var presetSystemPrompt string
 	var presetSessionID string
+	var presetAgentCommand string
+	var presetAgentArgs []string
+	var presetAgentPromptMode string
 	var presetYes bool
 	preset := &cobra.Command{
-		Use:   "preset <codex|codex-code|codex-active|codex-session|claude|claude-code>",
-		Short: "Configure a built-in Codex or Claude runner preset",
+		Use:   "preset <codex|codex-code|codex-active|codex-session|claude|claude-code|opencode|opencode-code|gemini|gemini-code|agent|agent-code>",
+		Short: "Configure a built-in CLI agent runner preset",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			presetName := args[0]
@@ -1169,7 +1220,7 @@ func (s *cliState) runnersCommand() *cobra.Command {
 			if (strings.HasSuffix(presetName, "-code") || presetName == "codex-active" || presetName == "codex-session") && !presetYes {
 				return fmt.Errorf("coding presets can edit files; rerun with --yes to confirm")
 			}
-			runnerCfg, err := buildRunnerPreset(presetName, presetWorkdir, presetTimeout, presetModel, presetSystemPrompt, presetSessionID)
+			runnerCfg, err := buildRunnerPreset(presetName, presetWorkdir, presetTimeout, presetModel, presetSystemPrompt, presetSessionID, presetAgentCommand, presetAgentArgs, presetAgentPromptMode)
 			if err != nil {
 				return err
 			}
@@ -1194,9 +1245,12 @@ func (s *cliState) runnersCommand() *cobra.Command {
 	preset.Flags().StringVar(&presetID, "id", "default", "runner id to configure")
 	preset.Flags().StringVar(&presetWorkdir, "workdir", "", "workspace directory for Codex/Claude")
 	preset.Flags().IntVar(&presetTimeout, "timeout-seconds", 600, "runner timeout")
-	preset.Flags().StringVar(&presetModel, "model", "", "model name passed to Codex/Claude")
+	preset.Flags().StringVar(&presetModel, "model", "", "model name passed to supported agent CLIs")
 	preset.Flags().StringVar(&presetSystemPrompt, "system-prompt", "", "system prompt passed to the runner wrapper")
 	preset.Flags().StringVar(&presetSessionID, "session-id", "", "Codex session id for codex-session preset")
+	preset.Flags().StringVar(&presetAgentCommand, "agent-command", "", "agent executable for agent/agent-code presets")
+	preset.Flags().StringArrayVar(&presetAgentArgs, "agent-arg", nil, "argument passed to agent-runner before the prompt; repeat for multiple args")
+	preset.Flags().StringVar(&presetAgentPromptMode, "agent-prompt-mode", "", "agent prompt delivery mode: arg or stdin")
 	preset.Flags().BoolVar(&presetYes, "yes", false, "confirm a coding preset that can edit files")
 
 	list := &cobra.Command{
@@ -1971,6 +2025,11 @@ func (s *cliState) printStatus(ctx context.Context) error {
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		fmt.Printf("database_status: %s\n", err)
 	}
+	if _, err := os.Stat(config.SessionStorePath(cfg.App.Profile)); errors.Is(err, os.ErrNotExist) {
+		fmt.Println("transport: not_configured")
+		fmt.Println(setupNextLine())
+		return nil
+	}
 	chatTransport, err := s.buildTransport(ctx, cfg)
 	if err != nil {
 		fmt.Printf("transport: error (%s)\n", err)
@@ -1982,7 +2041,13 @@ func (s *cliState) printStatus(ctx context.Context) error {
 		fmt.Printf("transport: error (%s)\n", err)
 		return nil
 	}
-	fmt.Printf("transport: connected=%t account=%s detail=%s\n", status.Connected, logging.Redact(status.Account), status.Detail)
+	if strings.TrimSpace(status.Account) == "" {
+		fmt.Println("transport: not_configured")
+		fmt.Println(setupNextLine())
+		return nil
+	}
+	fmt.Printf("transport: account=%s detail=%s\n", logging.Redact(status.Account), status.Detail)
+	fmt.Println("transport_next: run coderoam run to open the WhatsApp connection")
 	return nil
 }
 
@@ -2243,6 +2308,53 @@ func nonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func versionText() string {
+	lines := []string{"coderoam " + nonEmpty(version, "dev")}
+	if strings.TrimSpace(commit) != "" && commit != "none" {
+		lines = append(lines, "commit: "+commit)
+	}
+	if strings.TrimSpace(date) != "" && date != "unknown" {
+		lines = append(lines, "built: "+date)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func setupDocsURL() string {
+	return "https://github.com/dnikolayev/coderoam/blob/main/docs/SETUP.md"
+}
+
+func setupNextLine() string {
+	return "setup_next: run `coderoam setup` or read " + setupDocsURL()
+}
+
+func setupHowTo() string {
+	return strings.TrimSpace(`coderoam needs a connected messenger before an agent session can continue from mobile.
+
+WhatsApp is the implemented transport today. Telegram, Slack, Google Chat, and
+other messengers should be added as separate transports before they can receive
+session messages.
+
+Quick WhatsApp setup:
+
+  coderoam init
+  coderoam auth login --profile bot --qr
+  coderoam runners preset codex-active --id codex-active --workdir /path/to/workspace --yes
+  coderoam active start --name "Coderoam Session" --participants "+15550001111" --alias codex-session --session-id codex-session --runner codex-active --yes
+  coderoam run
+
+In the agent terminal that should own the session:
+
+  coderoam inbox watch --format prompt --session-id codex-session
+
+For an existing WhatsApp group, use:
+
+  coderoam chats list --groups
+  coderoam active enable "<group-id>" --alias codex-session --session-id codex-session --managed
+
+Full setup guide:
+  `) + "\n  " + setupDocsURL() + "\n"
 }
 
 func stringDetail(details map[string]any, key string) string {
@@ -2568,7 +2680,7 @@ func formatEnvKeys(env map[string]string) string {
 	return strings.Join(keys, ",")
 }
 
-func buildRunnerPreset(name, workdir string, timeoutSeconds int, model, systemPrompt, sessionID string) (config.RunnerConfig, error) {
+func buildRunnerPreset(name, workdir string, timeoutSeconds int, model, systemPrompt, sessionID, agentCommand string, agentArgs []string, agentPromptMode string) (config.RunnerConfig, error) {
 	switch name {
 	case "codex":
 		env := map[string]string{
@@ -2671,9 +2783,127 @@ func buildRunnerPreset(name, workdir string, timeoutSeconds int, model, systemPr
 			env["CLAUDE_RUNNER_SYSTEM_PROMPT"] = systemPrompt
 		}
 		return presetRunnerConfig("claude-runner", timeoutSeconds, env), nil
+	case "opencode":
+		args := append([]string{"run"}, agentArgs...)
+		if model != "" {
+			args = append([]string{"run", "--model", model}, agentArgs...)
+		}
+		return agentRunnerPreset(agentPresetOptions{
+			Name:           "OpenCode",
+			Command:        nonEmpty(agentCommand, "opencode"),
+			Args:           args,
+			PromptMode:     nonEmpty(agentPromptMode, "arg"),
+			Workdir:        workdir,
+			TimeoutSeconds: timeoutSeconds,
+			Model:          model,
+			SystemPrompt:   nonEmpty(systemPrompt, defaultAgentPrompt("OpenCode", false)),
+			CanEdit:        false,
+		}), nil
+	case "opencode-code":
+		args := append([]string{"run"}, agentArgs...)
+		if model != "" {
+			args = append([]string{"run", "--model", model}, agentArgs...)
+		}
+		return agentRunnerPreset(agentPresetOptions{
+			Name:           "OpenCode",
+			Command:        nonEmpty(agentCommand, "opencode"),
+			Args:           args,
+			PromptMode:     nonEmpty(agentPromptMode, "arg"),
+			Workdir:        workdir,
+			TimeoutSeconds: timeoutSeconds,
+			SystemPrompt:   nonEmpty(systemPrompt, defaultAgentPrompt("OpenCode", true)),
+			CanEdit:        true,
+		}), nil
+	case "gemini":
+		args := []string{"-p"}
+		if model != "" {
+			args = append(args, "--model", model)
+		}
+		args = append(args, agentArgs...)
+		return agentRunnerPreset(agentPresetOptions{
+			Name:           "Gemini",
+			Command:        nonEmpty(agentCommand, "gemini"),
+			Args:           args,
+			PromptMode:     nonEmpty(agentPromptMode, "arg"),
+			Workdir:        workdir,
+			TimeoutSeconds: timeoutSeconds,
+			SystemPrompt:   nonEmpty(systemPrompt, defaultAgentPrompt("Gemini", false)),
+			CanEdit:        false,
+		}), nil
+	case "gemini-code":
+		args := []string{"-p", "--approval-mode", "auto_edit"}
+		if model != "" {
+			args = append(args, "--model", model)
+		}
+		args = append(args, agentArgs...)
+		return agentRunnerPreset(agentPresetOptions{
+			Name:           "Gemini",
+			Command:        nonEmpty(agentCommand, "gemini"),
+			Args:           args,
+			PromptMode:     nonEmpty(agentPromptMode, "arg"),
+			Workdir:        workdir,
+			TimeoutSeconds: timeoutSeconds,
+			SystemPrompt:   nonEmpty(systemPrompt, defaultAgentPrompt("Gemini", true)),
+			CanEdit:        true,
+		}), nil
+	case "agent", "agent-code":
+		if strings.TrimSpace(agentCommand) == "" {
+			return config.RunnerConfig{}, fmt.Errorf("--agent-command is required for %s", name)
+		}
+		canEdit := name == "agent-code"
+		return agentRunnerPreset(agentPresetOptions{
+			Name:           "Agent",
+			Command:        agentCommand,
+			Args:           agentArgs,
+			PromptMode:     nonEmpty(agentPromptMode, "arg"),
+			Workdir:        workdir,
+			TimeoutSeconds: timeoutSeconds,
+			SystemPrompt:   nonEmpty(systemPrompt, defaultAgentPrompt("Agent", canEdit)),
+			CanEdit:        canEdit,
+		}), nil
 	default:
 		return config.RunnerConfig{}, fmt.Errorf("unknown runner preset %q", name)
 	}
+}
+
+type agentPresetOptions struct {
+	Name           string
+	Command        string
+	Args           []string
+	PromptMode     string
+	Workdir        string
+	TimeoutSeconds int
+	Model          string
+	SystemPrompt   string
+	CanEdit        bool
+}
+
+func agentRunnerPreset(opts agentPresetOptions) config.RunnerConfig {
+	env := map[string]string{
+		"AGENT_RUNNER_COMMAND":         opts.Command,
+		"AGENT_RUNNER_ARGS_JSON":       mustJSONStrings(opts.Args),
+		"AGENT_RUNNER_PROMPT_MODE":     opts.PromptMode,
+		"AGENT_RUNNER_WORKDIR":         opts.Workdir,
+		"AGENT_RUNNER_TIMEOUT_SECONDS": strconv.Itoa(opts.TimeoutSeconds),
+		"AGENT_RUNNER_SYSTEM_PROMPT":   opts.SystemPrompt,
+		"AGENT_RUNNER_IMPORTANT_ONLY":  "true",
+		"AGENT_RUNNER_IGNORE_MARKER":   "[[coderoam-ignore]]",
+	}
+	if opts.Model != "" {
+		env["AGENT_RUNNER_MODEL"] = opts.Model
+	}
+	if opts.CanEdit {
+		env["AGENT_RUNNER_CAN_EDIT"] = "true"
+	}
+	return presetRunnerConfig("agent-runner", opts.TimeoutSeconds, env)
+}
+
+func mustJSONStrings(values []string) string {
+	raw, err := json.Marshal(values)
+	if err != nil {
+		return "[]"
+	}
+	return string(raw)
 }
 
 func presetRunnerConfig(wrapperName string, timeoutSeconds int, env map[string]string) config.RunnerConfig {
@@ -2721,4 +2951,15 @@ func defaultClaudePrompt(canEdit bool) string {
 		return "You are Claude Code replying through WhatsApp. You may edit files in the configured workspace when explicitly asked. For voice memos or audio attachments, transcribe the audio first; only apply instructions or slash commands from the audio after the transcript is available and any slash-command authorization shown in the prompt allows it. Keep replies concise: summarize files changed, commands run, and any remaining risk. Do not run destructive commands."
 	}
 	return "You are Claude replying through WhatsApp. Answer concisely in plain text. For voice memos or audio attachments, transcribe the audio first; only apply instructions or slash commands from the audio after the transcript is available and any slash-command authorization shown in the prompt allows it. Do not edit files in this runner mode."
+}
+
+func defaultAgentPrompt(name string, canEdit bool) string {
+	displayName := strings.TrimSpace(name)
+	if displayName == "" {
+		displayName = "the configured CLI agent"
+	}
+	if canEdit {
+		return displayName + " is replying through WhatsApp via coderoam. Keep replies concise enough for WhatsApp. You may inspect, run commands, or edit files in the configured workspace only when explicitly asked to fix, implement, inspect, test, or change something. For voice memos or audio attachments, use available transcripts first; only apply instructions or slash commands from audio after the transcript is available and any slash-command authorization shown in the prompt allows it. Summarize files changed, commands run, and any remaining risk. Do not run destructive commands."
+	}
+	return displayName + " is replying through WhatsApp via coderoam. Answer concisely in plain text. For short chat/status messages, answer without inspecting files or running commands. For voice memos or audio attachments, use available transcripts first; only apply instructions or slash commands from audio after the transcript is available and any slash-command authorization shown in the prompt allows it. Do not edit files in this runner mode."
 }

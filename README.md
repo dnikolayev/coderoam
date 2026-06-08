@@ -71,10 +71,21 @@ Build:
 ```sh
 go build -o bin/coderoam ./cmd/coderoam
 go build -o bin/coderoam-transcribe ./cmd/coderoam-transcribe
+go build -o bin/agent-runner ./examples/agent-runner
 go build -o bin/echo-runner ./examples/echo-runner
 go build -o bin/codex-runner ./examples/codex-runner
 go build -o bin/claude-runner ./examples/claude-runner
 ```
+
+Homebrew tap install:
+
+```sh
+brew tap dnikolayev/coderoam https://github.com/dnikolayev/coderoam.git
+brew install --HEAD dnikolayev/coderoam/coderoam
+coderoam setup
+```
+
+See [docs/HOMEBREW.md](docs/HOMEBREW.md) for formula notes.
 
 Initialize local config:
 
@@ -142,6 +153,9 @@ bin/coderoam groups set-runner "1203630xxxxx@g.us" codex-session
 
 Use a specific session id if you need to avoid accidentally resuming another
 recent Codex session.
+
+If you installed through Homebrew, replace `bin/coderoam` with `coderoam` in the
+commands below.
 
 For a currently active Codex session, prefer the inbox relay. This stores
 WhatsApp input locally and lets the active Codex session pull it between work
@@ -269,6 +283,8 @@ sent to a fallback runner, with redacted sender/chat identifiers.
 
 Reusable client instructions live in:
 
+- `docs/SETUP.md`
+- `docs/HOMEBREW.md`
 - `docs/AGENT_RELAY.md`
 - `docs/agents/codex.md`
 - `docs/agents/claude.md`
@@ -307,15 +323,37 @@ claude
 
 Then complete Claude's `/login` flow.
 
+OpenCode, Gemini, and other CLI agents are supported through the generic
+`agent-runner` wrapper. Built-in presets:
+
+```sh
+bin/coderoam runners preset opencode --id opencode --workdir /path/to/workspace
+bin/coderoam runners preset opencode-code --id opencode-code --workdir /path/to/workspace --yes
+bin/coderoam runners preset gemini --id gemini --workdir /path/to/workspace
+bin/coderoam runners preset gemini-code --id gemini-code --workdir /path/to/workspace --yes
+```
+
+For any other CLI that can accept a prompt as an argument or stdin:
+
+```sh
+bin/coderoam runners preset agent \
+  --id my-agent \
+  --workdir /path/to/workspace \
+  --agent-command my-agent-cli \
+  --agent-arg run
+```
+
+Use `agent-code --yes` only for agents that may edit files.
+
 ## Important-only notifications
 
-The Codex and Claude wrappers can suppress routine assistant output. When
-important-only mode is enabled, the wrapper tells the assistant to reply only for
-important WhatsApp updates: plan/checklist changes, blockers, questions that
-need the user, approval/input requests, or final summaries. If there is no
-important update, the assistant is instructed to return the exact ignore marker.
-The wrapper converts that marker into a runner `ignore` action, and
-`coderoam` sends no WhatsApp message.
+The Codex, Claude, and generic agent wrappers can suppress routine assistant
+output. When important-only mode is enabled, the wrapper tells the assistant to
+reply only for important WhatsApp updates: plan/checklist changes, blockers,
+questions that need the user, approval/input requests, or final summaries. If
+there is no important update, the assistant is instructed to return the exact
+ignore marker. The wrapper converts that marker into a runner `ignore` action,
+and `coderoam` sends no WhatsApp message.
 
 Enabled by built-in presets:
 
@@ -323,6 +361,12 @@ Enabled by built-in presets:
 - `codex-session`
 - `claude`
 - `claude-code`
+- `opencode`
+- `opencode-code`
+- `gemini`
+- `gemini-code`
+- `agent`
+- `agent-code`
 
 Optional runner environment variables:
 
@@ -346,6 +390,16 @@ Optional runner environment variables:
 - `CLAUDE_RUNNER_IGNORE_MARKER`: exact marker that means "send no WhatsApp reply"; default `[[coderoam-ignore]]`.
 - `CLAUDE_RUNNER_AUDIO_TRANSCRIBE_COMMAND`: optional local command that receives a downloaded audio path and writes the transcript to stdout.
 - `CLAUDE_RUNNER_AUDIO_TRANSCRIBE_TIMEOUT_SECONDS`: optional audio transcription timeout; default `120`.
+- `AGENT_RUNNER_COMMAND`: executable for the generic wrapper, for example `opencode`, `gemini`, or another CLI.
+- `AGENT_RUNNER_ARGS_JSON`: JSON array of arguments passed before the prompt, for example `["run"]` or `["-p"]`.
+- `AGENT_RUNNER_ARGS`: simpler whitespace-split argument fallback when JSON is not needed.
+- `AGENT_RUNNER_PROMPT_MODE`: `arg` to append the prompt as the final argument, or `stdin` to pipe the prompt.
+- `AGENT_RUNNER_WORKDIR`: working directory for the generic agent process.
+- `AGENT_RUNNER_SYSTEM_PROMPT`: instruction prepended to WhatsApp messages.
+- `AGENT_RUNNER_IMPORTANT_ONLY`: set to `true` to suppress routine WhatsApp replies.
+- `AGENT_RUNNER_IGNORE_MARKER`: exact marker that means "send no WhatsApp reply"; default `[[coderoam-ignore]]`.
+- `AGENT_RUNNER_AUDIO_TRANSCRIBE_COMMAND`: optional local command that receives a downloaded audio path and writes the transcript to stdout.
+- `AGENT_RUNNER_AUDIO_TRANSCRIBE_TIMEOUT_SECONDS`: optional audio transcription timeout; default `120`.
 
 ## Active WhatsApp Slash Commands
 
