@@ -53,12 +53,12 @@ Read the full setup guide in [SETUP.md](SETUP.md).
 ## Homebrew Core Readiness
 
 Homebrew core expects new formulae to have a stable, tagged version and pass the
-formula audit. For `v0.1.0`, create and push the tag only after release preflight
+formula audit. For `v0.1.1`, create and push the tag only after release preflight
 passes:
 
 ```sh
-git tag -a v0.1.0 -m "coderoam v0.1.0"
-git push origin v0.1.0
+git tag -a v0.1.1 -m "coderoam v0.1.1"
+git push origin v0.1.1
 ```
 
 The `Release` workflow will upload:

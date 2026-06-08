@@ -20,6 +20,19 @@ coderoam active start --name "Coderoam Session" --participants "+15550001111" --
 coderoam run
 ```
 
+`coderoam setup` also scans `PATH` for supported local agent clients and prints
+matching runner preset commands. To focus on one client or one workspace:
+
+```sh
+coderoam setup --agent auto --workdir /path/to/workspace --session-id codex-session
+coderoam setup --agent codex --workdir /path/to/workspace --session-id codex-session
+```
+
+`active start` creates a dedicated WhatsApp group and direct-messages the group
+invite link to `--participants` by default. The user opens that link to join the
+session chat when WhatsApp privacy settings do not add them automatically. Pass
+`--invite-to` to DM the link to a different phone number or WhatsApp JID.
+
 In the agent terminal that should own the session:
 
 ```sh
@@ -53,6 +66,8 @@ coderoam runners preset agent --id my-agent --workdir /path/to/workspace --agent
 ```
 
 Use the `*-code` variants with `--yes` only when that local agent may edit files.
+Run `coderoam setup --agent auto` to detect which of these client commands are
+available on the current machine.
 
 ## Use An Existing WhatsApp Group
 

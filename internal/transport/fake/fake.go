@@ -19,6 +19,7 @@ type Transport struct {
 	Sent         []Sent
 	Read         []ReadReceipt
 	Archived     []string
+	InviteLinks  []InviteLink
 }
 
 type Sent struct {
@@ -31,6 +32,11 @@ type ReadReceipt struct {
 	ChatID    string
 	SenderID  string
 	MessageID string
+}
+
+type InviteLink struct {
+	ChatID string
+	Reset  bool
 }
 
 func New(chats []types.Chat) *Transport {
@@ -86,6 +92,9 @@ func (t *Transport) CreateGroup(ctx context.Context, name string, participants [
 }
 
 func (t *Transport) GetGroupInviteLink(ctx context.Context, chatID string, reset bool) (string, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.InviteLinks = append(t.InviteLinks, InviteLink{ChatID: chatID, Reset: reset})
 	return "https://chat.whatsapp.com/fake-invite", nil
 }
 
@@ -117,6 +126,14 @@ func (t *Transport) SentSnapshot() []Sent {
 	defer t.mu.Unlock()
 	out := make([]Sent, len(t.Sent))
 	copy(out, t.Sent)
+	return out
+}
+
+func (t *Transport) InviteLinksSnapshot() []InviteLink {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]InviteLink, len(t.InviteLinks))
+	copy(out, t.InviteLinks)
 	return out
 }
 

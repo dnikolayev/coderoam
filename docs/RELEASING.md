@@ -23,7 +23,7 @@ Generate release compliance artifacts from the exact release commit:
 mkdir -p dist/compliance
 go list -m all > dist/compliance/go-modules.txt
 go run github.com/google/go-licenses@latest report ./... > dist/compliance/third-party-license-report.txt
-go run github.com/google/osv-scanner/v2/cmd/osv-scanner@latest --lockfile go.sum
+go run github.com/google/osv-scanner/cmd/osv-scanner@v1.9.2 scan --recursive --skip-git .
 go run github.com/anchore/syft/cmd/syft@latest dir:. -o spdx-json=dist/compliance/coderoam.spdx.json
 ```
 
@@ -107,7 +107,7 @@ tarball, and renders the Homebrew-core candidate formula with the real source
 Use manual dispatch for dry-run packaging before a tag:
 
 ```sh
-gh workflow run release.yml -f version=v0.1.0
+gh workflow run release.yml -f version=v0.1.1
 ```
 
 Manual dispatch does not create a GitHub release or a final Homebrew-core

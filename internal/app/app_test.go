@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"io"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/dnikolayev/coderoam/internal/config"
 	"github.com/dnikolayev/coderoam/internal/db"
+	"github.com/dnikolayev/coderoam/internal/transport"
 	"github.com/dnikolayev/coderoam/internal/transport/fake"
 	"github.com/dnikolayev/coderoam/internal/types"
 )
@@ -164,6 +166,73 @@ func TestSetupCommandPrintsMessengerConnectionHowTo(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("setup output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestSetupCommandDetectsAgentClientsAndPrintsSelectionCommands(t *testing.T) {
+	originalLookPath := commandLookPath
+	commandLookPath = func(name string) (string, error) {
+		switch name {
+		case "codex":
+			return "/usr/local/bin/codex", nil
+		case "gemini":
+			return "/opt/bin/gemini", nil
+		default:
+			return "", os.ErrNotExist
+		}
+	}
+	defer func() { commandLookPath = originalLookPath }()
+
+	state := &cliState{}
+	cmd := state.setupCommand()
+	cmd.SetArgs([]string{"--agent", "auto", "--workdir", "/workspace/project", "--session-id", "claims-qa"})
+	out, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Detected agent clients:",
+		"Codex: found at /usr/local/bin/codex",
+		"Gemini: found at /opt/bin/gemini",
+		"Claude: not found",
+		"coderoam runners preset codex-active --id codex-active --workdir /workspace/project --yes",
+		"coderoam runners preset gemini-code --id gemini-code --workdir /workspace/project --yes",
+		"coderoam active start --name \"Codex Session\"",
+		"--alias claims-qa --session-id claims-qa --runner codex-active --yes",
+		"docs/agents/codex.md",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("setup output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestSetupCommandCanShowSelectedMissingAgent(t *testing.T) {
+	originalLookPath := commandLookPath
+	commandLookPath = func(name string) (string, error) {
+		return "", os.ErrNotExist
+	}
+	defer func() { commandLookPath = originalLookPath }()
+
+	state := &cliState{}
+	cmd := state.setupCommand()
+	cmd.SetArgs([]string{"--agent", "claude", "--workdir", "/workspace/project", "--session-id", "review"})
+	out, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Claude: not found",
+		"coderoam runners preset claude-code --id claude-code --workdir /workspace/project --yes",
+		"--alias review --session-id review --runner claude-code --yes",
+		"docs/agents/claude.md",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("setup output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Codex:") || strings.Contains(out, "Gemini:") {
+		t.Fatalf("selected-agent setup should not print all candidates:\n%s", out)
 	}
 }
 
@@ -945,7 +1014,13 @@ func TestActiveStartCreatesParallelSessionGroup(t *testing.T) {
 	if err := config.Save(path, cfg); err != nil {
 		t.Fatal(err)
 	}
-	state := &cliState{configPath: path}
+	ft := fake.New(nil)
+	state := &cliState{
+		configPath: path,
+		transportFactory: func(context.Context, config.Config) (transport.ChatTransport, error) {
+			return ft, nil
+		},
+	}
 	cmd := state.activeCommand()
 	cmd.SetArgs([]string{
 		"start",
@@ -956,7 +1031,8 @@ func TestActiveStartCreatesParallelSessionGroup(t *testing.T) {
 		"--runner", "codex-active",
 		"--yes",
 	})
-	if err := cmd.Execute(); err != nil {
+	out, err := captureStdout(t, cmd.Execute)
+	if err != nil {
 		t.Fatal(err)
 	}
 	updated, err := config.Load(path)
@@ -981,6 +1057,60 @@ func TestActiveStartCreatesParallelSessionGroup(t *testing.T) {
 	}
 	if !group.Enabled {
 		t.Fatal("group should be enabled")
+	}
+	inviteLinks := ft.InviteLinksSnapshot()
+	if len(inviteLinks) != 1 || inviteLinks[0].ChatID != "fake-1@g.us" || inviteLinks[0].Reset {
+		t.Fatalf("invite links = %+v", inviteLinks)
+	}
+	sent := ft.SentSnapshot()
+	if len(sent) != 1 {
+		t.Fatalf("sent DMs = %+v, want one invite DM", sent)
+	}
+	if sent[0].ChatID != "+15550001111" {
+		t.Fatalf("invite DM recipient = %q", sent[0].ChatID)
+	}
+	for _, want := range []string{"Join the coderoam active session group", "https://chat.whatsapp.com/fake-invite", "Open this WhatsApp link"} {
+		if !strings.Contains(sent[0].Text, want) {
+			t.Fatalf("invite DM missing %q:\n%s", want, sent[0].Text)
+		}
+	}
+	if !strings.Contains(out, "sent invite") || !strings.Contains(out, "watch: coderoam inbox watch --format prompt --session-id parallel-work") {
+		t.Fatalf("active start output = %q", out)
+	}
+
+	secondCmd := state.activeCommand()
+	secondCmd.SetArgs([]string{
+		"start",
+		"--name", "Review Lane",
+		"--participants", "+15550002222",
+		"--alias", "review-lane",
+		"--session-id", "review-lane",
+		"--yes",
+	})
+	if _, err := captureStdout(t, secondCmd.Execute); err != nil {
+		t.Fatal(err)
+	}
+	updated, err = config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.Groups) != 2 {
+		t.Fatalf("groups = %+v, want two active session groups", updated.Groups)
+	}
+	secondGroup, ok := resolveGroup(updated, "review-lane")
+	if !ok {
+		t.Fatal("second active group not configured")
+	}
+	if secondGroup.ID != "fake-2@g.us" || config.ActiveSessionID(secondGroup) != "review-lane" || !secondGroup.RelayManaged || !secondGroup.Enabled {
+		t.Fatalf("second active group = %+v", secondGroup)
+	}
+	inviteLinks = ft.InviteLinksSnapshot()
+	if len(inviteLinks) != 2 || inviteLinks[1].ChatID != "fake-2@g.us" {
+		t.Fatalf("invite links after second start = %+v", inviteLinks)
+	}
+	sent = ft.SentSnapshot()
+	if len(sent) != 2 || sent[1].ChatID != "+15550002222" || !strings.Contains(sent[1].Text, "Review Lane") {
+		t.Fatalf("sent DMs after second start = %+v", sent)
 	}
 }
 

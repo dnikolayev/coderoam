@@ -20,7 +20,7 @@ stalkerware, or contacting people without consent.
 
 ## Status
 
-Current implementation: v0.1-style local text/JSON bridge foundation.
+Current implementation: v0.1.1 local text/JSON bridge foundation.
 
 Project maturity: early MVP. The public API, config shape, database schema, and
 runner protocol can still change before v1.0.
@@ -87,6 +87,14 @@ Homebrew tap install:
 brew tap dnikolayev/coderoam https://github.com/dnikolayev/coderoam.git
 brew install --HEAD dnikolayev/coderoam/coderoam
 coderoam setup
+```
+
+`coderoam setup` detects supported local agent CLIs on `PATH` and prints the
+matching runner preset commands. Use `--agent auto` to show everything detected,
+or select one client:
+
+```sh
+coderoam setup --agent codex --workdir /path/to/workspace --session-id codex-session
 ```
 
 See [docs/HOMEBREW.md](docs/HOMEBREW.md) for the tap fallback, release
@@ -187,6 +195,12 @@ bin/coderoam active start \
   --session-id claims-qa \
   --yes
 ```
+
+`active start` creates a dedicated WhatsApp group for that session and sends the
+group invite link by direct message to the `--participants` list. Use
+`--invite-to "+15550001111"` to send the link somewhere else. The user must open
+that WhatsApp link to enter the session chat when WhatsApp privacy settings do
+not add them automatically.
 
 Then run a watcher for that session id in the Codex window that should own that
 work lane:
@@ -297,6 +311,10 @@ Reusable client instructions live in:
 - `docs/agents/opencode.md`
 - `docs/agents/generic.md`
 - `skills/whatsapp-relay/`
+
+`coderoam setup --agent auto --workdir /path/to/workspace` detects installed
+client commands (`codex`, `claude`, `gemini`, `opencode`) and prints the matching
+`runners preset` command plus the instruction file to copy into that client.
 
 Claude Code is supported through `claude-runner`:
 

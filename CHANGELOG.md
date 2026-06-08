@@ -6,6 +6,21 @@ protocols.
 
 ## Unreleased
 
+## v0.1.1 - 2026-06-08
+
+### Added
+
+- `coderoam active start` now sends the created group invite link by direct
+  message to the participant list, with `--invite-to` for an alternate
+  recipient.
+- `coderoam setup` now detects supported local agent CLIs on `PATH` and prints
+  exact runner preset, active group, and instruction-file commands for Codex,
+  Claude, Gemini, and OpenCode.
+- Parallel active-session routing tests now verify that simultaneous messages
+  for separate session groups are claimed only by the matching session watcher.
+
+## v0.1.0 - 2026-06-08
+
 ### Added
 
 - Active-session relay for routing WhatsApp messages into the current Codex

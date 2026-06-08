@@ -67,6 +67,10 @@ rtk ./coderoam/bin/coderoam active start \
   --yes
 ```
 
+`active start` sends the group invite link by direct message to the
+`--participants` list after creating the group. Use `--invite-to` when the person
+who should open the WhatsApp link differs from the initial participant list.
+
 Then start a separate client or terminal watcher with that session id:
 
 ```sh

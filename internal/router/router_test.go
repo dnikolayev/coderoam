@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -218,6 +219,97 @@ func TestRouterStoresActiveSessionMessageWithoutRunner(t *testing.T) {
 	}
 	if len(ft.Read) != 0 {
 		t.Fatalf("duplicate active-session read receipt count = %d, want 0", len(ft.Read))
+	}
+}
+
+func TestRouterRoutesParallelActiveSessionsToSeparateInboxes(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Groups = []config.GroupConfig{
+		{
+			ID:              "session-a@g.us",
+			Alias:           "session-a",
+			Mode:            config.GroupModeActiveSession,
+			ActiveSessionID: "session-a",
+			RelayManaged:    true,
+			Enabled:         true,
+		},
+		{
+			ID:              "session-b@g.us",
+			Alias:           "session-b",
+			Mode:            config.GroupModeActiveSession,
+			ActiveSessionID: "session-b",
+			RelayManaged:    true,
+			Enabled:         true,
+		},
+	}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	messages := []types.IncomingMessage{
+		{
+			ID:        "wa-a-1",
+			ChatID:    "session-a@g.us",
+			ChatType:  types.ChatTypeGroup,
+			SenderID:  "owner-a@s.whatsapp.net",
+			Text:      "message for a",
+			RawText:   "message for a",
+			Timestamp: time.Now(),
+		},
+		{
+			ID:        "wa-b-1",
+			ChatID:    "session-b@g.us",
+			ChatType:  types.ChatTypeGroup,
+			SenderID:  "owner-b@s.whatsapp.net",
+			Text:      "message for b",
+			RawText:   "message for b",
+			Timestamp: time.Now(),
+		},
+	}
+	var wg sync.WaitGroup
+	results := make([]ProcessResult, len(messages))
+	for i := range messages {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i] = r.Handle(t.Context(), messages[i])
+		}(i)
+	}
+	wg.Wait()
+	for i, result := range results {
+		if result.Ignored {
+			t.Fatalf("message %d ignored: %+v", i, result)
+		}
+	}
+	sessionB, ok, err := store.ClaimNextActiveInboxForSession(t.Context(), "test", "session-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || sessionB.ExternalMessageID != "wa-b-1" || sessionB.ChatID != "session-b@g.us" || sessionB.SessionID != "session-b" || sessionB.ClaimedBySessionID != "session-b" {
+		t.Fatalf("session-b claim = %+v ok=%t", sessionB, ok)
+	}
+	if _, ok, err := store.ClaimNextActiveInboxForSession(t.Context(), "test", "session-b"); err != nil {
+		t.Fatal(err)
+	} else if ok {
+		t.Fatal("session-b claimed a row from another session")
+	}
+	sessionA, ok, err := store.ClaimNextActiveInboxForSession(t.Context(), "test", "session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || sessionA.ExternalMessageID != "wa-a-1" || sessionA.ChatID != "session-a@g.us" || sessionA.SessionID != "session-a" || sessionA.ClaimedBySessionID != "session-a" {
+		t.Fatalf("session-a claim = %+v ok=%t", sessionA, ok)
+	}
+	if len(ft.Sent) != 0 {
+		t.Fatalf("active-session routing should not send WhatsApp replies before claim: %+v", ft.Sent)
+	}
+	if len(ft.Read) != 0 {
+		t.Fatalf("active-session routing should defer read receipts until claim: %+v", ft.Read)
 	}
 }
 

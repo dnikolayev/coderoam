@@ -38,10 +38,13 @@ var (
 	version = "dev"
 	commit  = "none"
 	date    = "unknown"
+
+	commandLookPath = exec.LookPath
 )
 
 type cliState struct {
-	configPath string
+	configPath       string
+	transportFactory func(context.Context, config.Config) (transport.ChatTransport, error)
 }
 
 type inboxWatchOptions struct {
@@ -486,6 +489,9 @@ func (s *cliState) versionCommand() *cobra.Command {
 
 func (s *cliState) setupCommand() *cobra.Command {
 	var messenger string
+	var agent string
+	var workdir string
+	var sessionID string
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Show the commands required before mobile chat sessions can work",
@@ -502,10 +508,14 @@ agent runner, and creating or binding a dedicated session group.`,
 				fmt.Println()
 			}
 			fmt.Print(setupHowTo())
+			fmt.Print(setupAgentGuide(agent, workdir, sessionID))
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&messenger, "messenger", "whatsapp", "messenger transport to configure")
+	cmd.Flags().StringVar(&agent, "agent", "auto", "agent client to show: auto, codex, claude, gemini, opencode, or none")
+	cmd.Flags().StringVar(&workdir, "workdir", "", "workspace directory used in suggested runner preset commands")
+	cmd.Flags().StringVar(&sessionID, "session-id", "codex-session", "active session id used in suggested commands")
 	return cmd
 }
 
@@ -1913,6 +1923,7 @@ func (s *cliState) activeCommand() *cobra.Command {
 	var startAlias string
 	var startSessionID string
 	var startRunner string
+	var startInviteTo string
 	var startYes bool
 	start := &cobra.Command{
 		Use:   "start",
@@ -1983,8 +1994,16 @@ func (s *cliState) activeCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			inviteRecipients := activeStartInviteRecipients(participants, startInviteTo)
+			inviteResults, err := sendActiveSessionInvites(cmd.Context(), chatTransport, cfg, chat.ID, startName, inviteRecipients)
+			if err != nil {
+				return err
+			}
 			fmt.Printf("created active group id=%s name=%q participants=%d\n", chat.ID, chat.DisplayName, chat.ParticipantCount)
 			fmt.Printf("active group=%s alias=%s session=%s runner=%s managed=true migrated=%d\n", chat.ID, startAlias, startSessionID, nonEmpty(startRunner, "-"), migrated)
+			for _, result := range inviteResults {
+				fmt.Printf("sent invite id=%s to=%s\n", result.ID, logging.Redact(result.Recipient))
+			}
 			fmt.Printf("watch: coderoam inbox watch --format prompt --session-id %s\n", shellQuote(startSessionID))
 			fmt.Printf("notify: coderoam notify --chat %s --important --text %s\n", shellQuote(startAlias), shellQuote("Update..."))
 			return nil
@@ -1995,6 +2014,7 @@ func (s *cliState) activeCommand() *cobra.Command {
 	start.Flags().StringVar(&startAlias, "alias", "", "local active group alias; defaults to a slug of --name")
 	start.Flags().StringVar(&startSessionID, "session-id", "", "active session id; defaults to --alias")
 	start.Flags().StringVar(&startRunner, "runner", "", "optional fallback runner id; blank keeps messages queued for a live watcher")
+	start.Flags().StringVar(&startInviteTo, "invite-to", "", "comma-separated phone numbers or WhatsApp JIDs to DM the group invite link; defaults to --participants")
 	start.Flags().BoolVar(&startYes, "yes", false, "confirm creating a WhatsApp group")
 
 	var alias string
@@ -2177,6 +2197,49 @@ func shouldArchiveRelayGroup(event types.GroupEvent) (bool, string) {
 		return true, "no human participants remain"
 	}
 	return false, ""
+}
+
+type activeInviteResult struct {
+	Recipient string
+	ID        string
+}
+
+func activeStartInviteRecipients(participants []string, inviteTo string) []string {
+	recipients := splitCSV(inviteTo)
+	if len(recipients) == 0 {
+		recipients = participants
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(recipients))
+	for _, recipient := range recipients {
+		key := strings.ToLower(strings.TrimSpace(recipient))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, recipient)
+	}
+	return out
+}
+
+func sendActiveSessionInvites(ctx context.Context, chatTransport transport.ChatTransport, cfg config.Config, chatID, groupName string, recipients []string) ([]activeInviteResult, error) {
+	if len(recipients) == 0 {
+		return nil, nil
+	}
+	link, err := chatTransport.GetGroupInviteLink(ctx, chatID, false)
+	if err != nil {
+		return nil, err
+	}
+	text := fmt.Sprintf("Join the coderoam active session group %q: %s\n\nOpen this WhatsApp link to enter the session chat.", groupName, link)
+	results := make([]activeInviteResult, 0, len(recipients))
+	for _, recipient := range recipients {
+		sent, err := chatTransport.SendText(ctx, recipient, text, types.SendOptions{TypingIndicator: cfg.Reply.TypingIndicator})
+		if err != nil {
+			return results, fmt.Errorf("send invite to %s: %w", logging.Redact(recipient), err)
+		}
+		results = append(results, activeInviteResult{Recipient: recipient, ID: sent.ID})
+	}
+	return results, nil
 }
 
 func (s *cliState) inboxCommand() *cobra.Command {
@@ -2786,6 +2849,9 @@ func (s *cliState) loadConfig() (config.Config, string, error) {
 }
 
 func (s *cliState) buildTransport(ctx context.Context, cfg config.Config) (transport.ChatTransport, error) {
+	if s.transportFactory != nil {
+		return s.transportFactory(ctx, cfg)
+	}
 	switch cfg.Transport.Type {
 	case "fake":
 		chats := make([]types.Chat, 0, len(cfg.Groups))
@@ -3087,6 +3153,98 @@ For an existing WhatsApp group, use:
 
 Full setup guide:
   `) + "\n  " + setupDocsURL() + "\n"
+}
+
+type setupAgentCandidate struct {
+	Key          string
+	Display      string
+	Command      string
+	Preset       string
+	RunnerID     string
+	Instructions string
+}
+
+type setupAgentDetection struct {
+	setupAgentCandidate
+	Path  string
+	Found bool
+}
+
+func setupAgentGuide(agent, workdir, sessionID string) string {
+	agent = strings.ToLower(strings.TrimSpace(agent))
+	if agent == "" {
+		agent = "auto"
+	}
+	if agent == "none" {
+		return ""
+	}
+	workdir = strings.TrimSpace(workdir)
+	if workdir == "" {
+		if cwd, err := os.Getwd(); err == nil {
+			workdir = cwd
+		} else {
+			workdir = "/path/to/workspace"
+		}
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		sessionID = "codex-session"
+	}
+	detections, selected, selectedKnown := detectSetupAgents(agent)
+	var b strings.Builder
+	b.WriteString("\nDetected agent clients:\n\n")
+	if !selectedKnown {
+		fmt.Fprintf(&b, "  unknown --agent %q; supported values are auto, codex, claude, gemini, opencode, none\n\n", agent)
+		selected = detections
+	}
+	foundAny := false
+	for _, detection := range selected {
+		status := "not found"
+		if detection.Found {
+			status = "found at " + detection.Path
+			foundAny = true
+		}
+		fmt.Fprintf(&b, "  %s: %s\n", detection.Display, status)
+		if detection.Found || agent != "auto" {
+			fmt.Fprintf(&b, "    configure: coderoam runners preset %s --id %s --workdir %s --yes\n", detection.Preset, detection.RunnerID, shellQuote(workdir))
+			fmt.Fprintf(&b, "    active group: coderoam active start --name %q --participants \"+15550001111\" --alias %s --session-id %s --runner %s --yes\n", detection.Display+" Session", shellQuote(sessionID), shellQuote(sessionID), detection.RunnerID)
+			fmt.Fprintf(&b, "    instructions: %s\n", detection.Instructions)
+		}
+	}
+	if agent == "auto" && !foundAny {
+		b.WriteString("\n  No supported agent CLI was found in PATH. Install or log in to one of: codex, claude, gemini, opencode.\n")
+		b.WriteString("  You can still print commands for a specific client with --agent codex, --agent claude, --agent gemini, or --agent opencode.\n")
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+func detectSetupAgents(agent string) ([]setupAgentDetection, []setupAgentDetection, bool) {
+	candidates := []setupAgentCandidate{
+		{Key: "codex", Display: "Codex", Command: "codex", Preset: "codex-active", RunnerID: "codex-active", Instructions: "docs/agents/codex.md"},
+		{Key: "claude", Display: "Claude", Command: "claude", Preset: "claude-code", RunnerID: "claude-code", Instructions: "docs/agents/claude.md"},
+		{Key: "gemini", Display: "Gemini", Command: "gemini", Preset: "gemini-code", RunnerID: "gemini-code", Instructions: "docs/agents/gemini.md"},
+		{Key: "opencode", Display: "OpenCode", Command: "opencode", Preset: "opencode-code", RunnerID: "opencode-code", Instructions: "docs/agents/opencode.md"},
+	}
+	detections := make([]setupAgentDetection, 0, len(candidates))
+	selected := []setupAgentDetection{}
+	selectedKnown := agent == "auto"
+	for _, candidate := range candidates {
+		detection := setupAgentDetection{setupAgentCandidate: candidate}
+		if path, err := commandLookPath(candidate.Command); err == nil {
+			detection.Path = path
+			detection.Found = true
+		}
+		detections = append(detections, detection)
+		if agent == candidate.Key {
+			selectedKnown = true
+			selected = append(selected, detection)
+		}
+	}
+	if agent == "auto" {
+		selected = detections
+	}
+	return detections, selected, selectedKnown
 }
 
 func stringDetail(details map[string]any, key string) string {

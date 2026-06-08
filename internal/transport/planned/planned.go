@@ -22,11 +22,11 @@ func New(name string) *Transport {
 }
 
 func (t *Transport) Login(ctx context.Context, method types.LoginMethod) error {
-	return fmt.Errorf("%s transport does not support login yet; use whatsapp-web for v0.1.0", t.name)
+	return fmt.Errorf("%s transport does not support login yet; use whatsapp-web in this release", t.name)
 }
 
 func (t *Transport) Connect(ctx context.Context) error {
-	return fmt.Errorf("%s transport is not implemented yet; use whatsapp-web for v0.1.0", t.name)
+	return fmt.Errorf("%s transport is not implemented yet; use whatsapp-web in this release", t.name)
 }
 
 func (t *Transport) Logout(ctx context.Context) error {
