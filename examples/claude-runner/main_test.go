@@ -48,6 +48,31 @@ func TestBuildPromptAddsImportantOnlyPolicy(t *testing.T) {
 	}
 }
 
+func TestBuildPromptIncludesSlashAuthorization(t *testing.T) {
+	t.Setenv("CLAUDE_RUNNER_SYSTEM_PROMPT", "base prompt")
+	got := buildPrompt(request{
+		SenderID: "sender@s.whatsapp.net",
+		ChatID:   "group@g.us",
+		Text:     "/goal ship it",
+		Sender:   senderInfo{IsAllowed: true},
+	})
+	if !strings.Contains(got, "Security: sender is authorized for WhatsApp slash commands.") {
+		t.Fatalf("prompt missing authorized slash guidance: %q", got)
+	}
+}
+
+func TestBuildPromptBlocksUnauthorizedSlashCommands(t *testing.T) {
+	t.Setenv("CLAUDE_RUNNER_SYSTEM_PROMPT", "base prompt")
+	got := buildPrompt(request{
+		SenderID: "sender@s.whatsapp.net",
+		ChatID:   "group@g.us",
+		Text:     "/goal ship it",
+	})
+	if !strings.Contains(got, "Security: sender is NOT authorized for WhatsApp slash commands.") {
+		t.Fatalf("prompt missing unauthorized slash guidance: %q", got)
+	}
+}
+
 func TestBuildPromptIncludesLocalAudioAttachment(t *testing.T) {
 	t.Setenv("CLAUDE_RUNNER_SYSTEM_PROMPT", "base prompt")
 	t.Setenv("CLAUDE_RUNNER_IMPORTANT_ONLY", "")
