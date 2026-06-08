@@ -18,6 +18,7 @@ bin/coderoam doctor
 Check that:
 
 - README scope and WhatsApp/Meta disclaimer are still accurate.
+- `docs/HOMEBREW.md` reflects the current formula/release path.
 - `CHANGELOG.md` has an entry for the release.
 - `LICENSE`, `NOTICE`, and `THIRD_PARTY_LICENSES.md` are included.
 - No profile data, session databases, QR images, logs, or local config secrets
