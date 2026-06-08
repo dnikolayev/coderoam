@@ -1,4 +1,4 @@
-module github.com/endurantdevs/codex-whatsapp
+module github.com/dnikolayev/coderoam
 
 go 1.25.4
 

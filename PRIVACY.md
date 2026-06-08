@@ -1,6 +1,6 @@
 # Privacy
 
-`chat-bridge` is local-first. By default it does not send telemetry, logs, credentials, or chat content to any external service except WhatsApp itself and the configured local runner.
+`coderoam` is local-first. By default it does not send telemetry, logs, credentials, or chat content to any external service except WhatsApp itself and the configured local runner.
 
 ## Stored Locally
 
@@ -14,8 +14,8 @@ The app stores:
 
 Default macOS paths are under:
 
-- `~/Library/Application Support/chat-bridge/`
-- `~/Library/Logs/chat-bridge/`
+- `~/Library/Application Support/coderoam/`
+- `~/Library/Logs/coderoam/`
 
 ## Message Text
 
@@ -49,15 +49,15 @@ transcribe the files. Keep retention limits appropriate for that profile.
 
 ## Deleting Data
 
-Run `chat-bridge auth logout` to invalidate the linked WhatsApp session, then
+Run `coderoam auth logout` to invalidate the linked WhatsApp session, then
 delete the profile directory from the app data path if you want to remove local
 history.
 
 Typical macOS cleanup:
 
 ```sh
-rm -rf "$HOME/Library/Application Support/chat-bridge/profiles/<profile>"
-rm -f "$HOME/Library/Logs/chat-bridge/chat-bridge.log"
+rm -rf "$HOME/Library/Application Support/coderoam/profiles/<profile>"
+rm -f "$HOME/Library/Logs/coderoam/coderoam.log"
 ```
 
 ## Telemetry

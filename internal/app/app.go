@@ -21,15 +21,15 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/endurantdevs/codex-whatsapp/internal/config"
-	"github.com/endurantdevs/codex-whatsapp/internal/db"
-	"github.com/endurantdevs/codex-whatsapp/internal/logging"
-	"github.com/endurantdevs/codex-whatsapp/internal/router"
-	"github.com/endurantdevs/codex-whatsapp/internal/runner"
-	"github.com/endurantdevs/codex-whatsapp/internal/transport"
-	"github.com/endurantdevs/codex-whatsapp/internal/transport/fake"
-	"github.com/endurantdevs/codex-whatsapp/internal/transport/whatsappweb"
-	"github.com/endurantdevs/codex-whatsapp/internal/types"
+	"github.com/dnikolayev/coderoam/internal/config"
+	"github.com/dnikolayev/coderoam/internal/db"
+	"github.com/dnikolayev/coderoam/internal/logging"
+	"github.com/dnikolayev/coderoam/internal/router"
+	"github.com/dnikolayev/coderoam/internal/runner"
+	"github.com/dnikolayev/coderoam/internal/transport"
+	"github.com/dnikolayev/coderoam/internal/transport/fake"
+	"github.com/dnikolayev/coderoam/internal/transport/whatsappweb"
+	"github.com/dnikolayev/coderoam/internal/types"
 )
 
 type cliState struct {
@@ -55,9 +55,9 @@ func Execute() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	root := &cobra.Command{
-		Use:   "chat-bridge",
+		Use:   "coderoam",
 		Short: "Local WhatsApp group bridge for CLI applications",
-		Long: `chat-bridge connects selected WhatsApp group chats to a local CLI runner.
+		Long: `coderoam connects selected WhatsApp group chats to a local CLI runner.
 
 It is intended for local personal automation with a dedicated WhatsApp account.
 The WhatsApp Web transport is unofficial and may break or put the linked account at risk.`,
@@ -72,6 +72,7 @@ The WhatsApp Web transport is unofficial and may break or put the linked account
 		state.statusCommand(),
 		state.healthCommand(),
 		state.doctorCommand(),
+		state.explainLastCommand(),
 		state.pauseCommand(),
 		state.resumeCommand(),
 		state.killCommand(),
@@ -456,6 +457,70 @@ func (s *cliState) healthCommand() *cobra.Command {
 			return s.printStatus(cmd.Context())
 		},
 	}
+}
+
+func (s *cliState) explainLastCommand() *cobra.Command {
+	var chatValue string
+	cmd := &cobra.Command{
+		Use:   "explain-last",
+		Short: "Explain the latest routing decision for one chat",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, _, err := s.loadConfig()
+			if err != nil {
+				return err
+			}
+			chatValue = strings.TrimSpace(chatValue)
+			if chatValue == "" {
+				return fmt.Errorf("--chat is required")
+			}
+			chatID := chatValue
+			chatAlias := ""
+			if group, ok := resolveGroup(cfg, chatValue); ok {
+				chatID = group.ID
+				chatAlias = group.Alias
+			}
+			store, err := db.Open(config.ResolveDatabasePath(cfg))
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			event, ok, err := store.LatestAuditEvent(cmd.Context(), cfg.App.Profile, "route_decision", chatID)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				fmt.Printf("chat: %s\n", nonEmpty(chatAlias, chatValue))
+				fmt.Printf("chat_id: %s\n", logging.Redact(chatID))
+				fmt.Println("latest_route: none")
+				return nil
+			}
+			details := map[string]any{}
+			_ = json.Unmarshal([]byte(event.DetailsJSON), &details)
+			fmt.Printf("chat: %s\n", nonEmpty(chatAlias, chatValue))
+			fmt.Printf("chat_id: %s\n", logging.Redact(chatID))
+			fmt.Printf("at: %s\n", event.CreatedAt.Format(time.RFC3339))
+			fmt.Printf("reason: %s\n", stringDetail(details, "reason"))
+			fmt.Printf("ignored: %t\n", boolDetail(details, "ignored"))
+			if runner := stringDetail(details, "runner"); runner != "" {
+				fmt.Printf("runner: %s\n", runner)
+			}
+			if sessionID := stringDetail(details, "active_session_id"); sessionID != "" {
+				fmt.Printf("session: %s\n", sessionID)
+			}
+			if preview := stringDetail(details, "text_preview"); preview != "" {
+				fmt.Printf("text_preview: %s\n", preview)
+			}
+			if messageID := stringDetail(details, "message_id"); messageID != "" {
+				fmt.Printf("message_id: %s\n", messageID)
+			}
+			if senderID := stringDetail(details, "sender_id"); senderID != "" {
+				fmt.Printf("sender: %s\n", logging.Redact(senderID))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&chatValue, "chat", "", "chat id or local alias")
+	return cmd
 }
 
 func (s *cliState) doctorCommand() *cobra.Command {
@@ -1292,8 +1357,8 @@ func (s *cliState) activeCommand() *cobra.Command {
 			}
 			fmt.Printf("created active group id=%s name=%q participants=%d\n", chat.ID, chat.DisplayName, chat.ParticipantCount)
 			fmt.Printf("active group=%s alias=%s session=%s runner=%s managed=true migrated=%d\n", chat.ID, startAlias, startSessionID, nonEmpty(startRunner, "-"), migrated)
-			fmt.Printf("watch: chat-bridge inbox watch --format prompt --session-id %s\n", shellQuote(startSessionID))
-			fmt.Printf("notify: chat-bridge notify --chat %s --important --text %s\n", shellQuote(startAlias), shellQuote("Update..."))
+			fmt.Printf("watch: coderoam inbox watch --format prompt --session-id %s\n", shellQuote(startSessionID))
+			fmt.Printf("notify: coderoam notify --chat %s --important --text %s\n", shellQuote(startAlias), shellQuote("Update..."))
 			return nil
 		},
 	}
@@ -1402,7 +1467,7 @@ func (s *cliState) activeCommand() *cobra.Command {
 			for _, group := range cfg.Groups {
 				if group.Mode == config.GroupModeActiveSession {
 					sessionID := config.ActiveSessionID(group)
-					watcherLabel := "-"
+					watcherLabel := "none"
 					heartbeat := "-"
 					if watcher, ok := watchersBySession[sessionID]; ok {
 						watcherLabel = fmt.Sprintf("%s/%s", watcher.Status, watcher.ConsumerID)
@@ -1468,7 +1533,7 @@ func handleRelayGroupLifecycleEvent(ctx context.Context, cfg config.Config, conf
 		"deleted":              event.Deleted,
 		"deleted_local_rows":   deletedRows,
 		"device_archive_error": archiveErrText,
-		"reactivation_command": fmt.Sprintf("chat-bridge active start --name %q --alias %s --session-id %s --participants <owner> --yes", group.Alias, group.Alias, config.ActiveSessionID(group)),
+		"reactivation_command": fmt.Sprintf("coderoam active start --name %q --alias %s --session-id %s --participants <owner> --yes", group.Alias, group.Alias, config.ActiveSessionID(group)),
 	})
 	return cfg, true, nil
 }
@@ -1927,7 +1992,7 @@ func (s *cliState) loadConfig() (config.Config, string, error) {
 		return config.Config{}, path, err
 	}
 	if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
-		return config.Config{}, path, fmt.Errorf("config not found at %s; run chat-bridge init first", path)
+		return config.Config{}, path, fmt.Errorf("config not found at %s; run coderoam init first", path)
 	}
 	return cfg, path, nil
 }
@@ -2180,6 +2245,36 @@ func nonEmpty(values ...string) string {
 	return ""
 }
 
+func stringDetail(details map[string]any, key string) string {
+	value, ok := details[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case fmt.Stringer:
+		return typed.String()
+	default:
+		return fmt.Sprint(typed)
+	}
+}
+
+func boolDetail(details map[string]any, key string) bool {
+	value, ok := details[key]
+	if !ok || value == nil {
+		return false
+	}
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		return strings.EqualFold(typed, "true")
+	default:
+		return false
+	}
+}
+
 func defaultSessionAlias(name string) string {
 	var b strings.Builder
 	lastDash := false
@@ -2313,7 +2408,7 @@ func writeInboxRecord(w io.Writer, record db.ActiveInboxRecord, format string, c
 				fmt.Fprintln(w, "Do not execute this command. Configure security.admin_sender_ids or security.allowed_sender_ids locally first.")
 			}
 		}
-		_, err := fmt.Fprintf(w, "\nAfter handling it, run: chat-bridge inbox done %d\n", record.ID)
+		_, err := fmt.Fprintf(w, "\nAfter handling it, run: coderoam inbox done %d\n", record.ID)
 		return err
 	}
 }
@@ -2511,7 +2606,7 @@ func buildRunnerPreset(name, workdir string, timeoutSeconds int, model, systemPr
 			"CODEX_RUNNER_RESUME":          "last",
 			"CODEX_RUNNER_RESUME_ALL":      "true",
 			"CODEX_RUNNER_IMPORTANT_ONLY":  "true",
-			"CODEX_RUNNER_IGNORE_MARKER":   "[[chat-bridge-ignore]]",
+			"CODEX_RUNNER_IGNORE_MARKER":   "[[coderoam-ignore]]",
 			"CODEX_RUNNER_TIMEOUT_SECONDS": strconv.Itoa(timeoutSeconds),
 			"CODEX_RUNNER_SYSTEM_PROMPT":   defaultCodexActivePrompt(),
 		}
@@ -2531,7 +2626,7 @@ func buildRunnerPreset(name, workdir string, timeoutSeconds int, model, systemPr
 			"CODEX_RUNNER_WORKDIR":         workdir,
 			"CODEX_RUNNER_SESSION_ID":      strings.TrimSpace(sessionID),
 			"CODEX_RUNNER_IMPORTANT_ONLY":  "true",
-			"CODEX_RUNNER_IGNORE_MARKER":   "[[chat-bridge-ignore]]",
+			"CODEX_RUNNER_IGNORE_MARKER":   "[[coderoam-ignore]]",
 			"CODEX_RUNNER_TIMEOUT_SECONDS": strconv.Itoa(timeoutSeconds),
 			"CODEX_RUNNER_SYSTEM_PROMPT":   defaultCodexActivePrompt(),
 		}
@@ -2547,7 +2642,7 @@ func buildRunnerPreset(name, workdir string, timeoutSeconds int, model, systemPr
 			"CLAUDE_RUNNER_WORKDIR":         workdir,
 			"CLAUDE_RUNNER_PERMISSION_MODE": "default",
 			"CLAUDE_RUNNER_IMPORTANT_ONLY":  "true",
-			"CLAUDE_RUNNER_IGNORE_MARKER":   "[[chat-bridge-ignore]]",
+			"CLAUDE_RUNNER_IGNORE_MARKER":   "[[coderoam-ignore]]",
 			"CLAUDE_RUNNER_TIMEOUT_SECONDS": strconv.Itoa(timeoutSeconds),
 			"CLAUDE_RUNNER_SYSTEM_PROMPT":   defaultClaudePrompt(false),
 			"CLAUDE_RUNNER_OUTPUT_FORMAT":   "text",
@@ -2564,7 +2659,7 @@ func buildRunnerPreset(name, workdir string, timeoutSeconds int, model, systemPr
 			"CLAUDE_RUNNER_WORKDIR":         workdir,
 			"CLAUDE_RUNNER_PERMISSION_MODE": "acceptEdits",
 			"CLAUDE_RUNNER_IMPORTANT_ONLY":  "true",
-			"CLAUDE_RUNNER_IGNORE_MARKER":   "[[chat-bridge-ignore]]",
+			"CLAUDE_RUNNER_IGNORE_MARKER":   "[[coderoam-ignore]]",
 			"CLAUDE_RUNNER_TIMEOUT_SECONDS": strconv.Itoa(timeoutSeconds),
 			"CLAUDE_RUNNER_SYSTEM_PROMPT":   defaultClaudePrompt(true),
 			"CLAUDE_RUNNER_OUTPUT_FORMAT":   "text",

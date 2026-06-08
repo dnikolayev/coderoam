@@ -4,11 +4,15 @@ This document is the release checklist for public artifacts.
 
 ## Preflight
 
+Releases are built from `main`. Normal development and pull requests target
+`dev`; promote `dev` to `main` only after review, tests, and release preflight
+checks pass.
+
 ```sh
 go mod tidy
 go test ./...
-go build -o bin/chat-bridge ./cmd/chat-bridge
-bin/chat-bridge doctor
+go build -o bin/coderoam ./cmd/coderoam
+bin/coderoam doctor
 ```
 
 Check that:
@@ -23,11 +27,11 @@ Check that:
 
 ## Suggested Artifacts
 
-- `chat-bridge_<version>_darwin_arm64.tar.gz`
-- `chat-bridge_<version>_darwin_amd64.tar.gz`
-- `chat-bridge_<version>_linux_amd64.tar.gz`
-- `chat-bridge_<version>_linux_arm64.tar.gz`
-- `chat-bridge_<version>_windows_amd64.zip`
+- `coderoam_<version>_darwin_arm64.tar.gz`
+- `coderoam_<version>_darwin_amd64.tar.gz`
+- `coderoam_<version>_linux_amd64.tar.gz`
+- `coderoam_<version>_linux_arm64.tar.gz`
+- `coderoam_<version>_windows_amd64.zip`
 - `checksums.txt`
 - SBOM or module license report
 

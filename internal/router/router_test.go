@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/endurantdevs/codex-whatsapp/internal/config"
-	"github.com/endurantdevs/codex-whatsapp/internal/db"
-	"github.com/endurantdevs/codex-whatsapp/internal/runner"
-	"github.com/endurantdevs/codex-whatsapp/internal/transport/fake"
-	"github.com/endurantdevs/codex-whatsapp/internal/types"
+	"github.com/dnikolayev/coderoam/internal/config"
+	"github.com/dnikolayev/coderoam/internal/db"
+	"github.com/dnikolayev/coderoam/internal/runner"
+	"github.com/dnikolayev/coderoam/internal/transport/fake"
+	"github.com/dnikolayev/coderoam/internal/types"
 )
 
 func TestRouterProcessesAllowedTriggeredMessageAndDedupes(t *testing.T) {
@@ -88,6 +88,7 @@ func TestRouterIgnoresUnallowedGroup(t *testing.T) {
 	defer store.Close()
 	ft := fake.New(nil)
 	r := New(cfg, store, ft)
+	r.activeFallbackDelay = 0
 	result := r.Handle(t.Context(), types.IncomingMessage{
 		ID:        "msg-2",
 		ChatID:    "not-allowed@g.us",
@@ -154,11 +155,8 @@ func TestRouterStoresActiveSessionMessageWithoutRunner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pendingOutbox) != 1 {
-		t.Fatalf("pending active outbox count = %d, want 1", len(pendingOutbox))
-	}
-	if !strings.Contains(pendingOutbox[0].Text, "for session codex-session") || !strings.Contains(pendingOutbox[0].Text, "Queued for the active Codex session to claim") {
-		t.Fatalf("ack text = %q", pendingOutbox[0].Text)
+	if len(pendingOutbox) != 0 {
+		t.Fatalf("minimal ack mode should not queue no-runner active ack: %+v", pendingOutbox)
 	}
 	if len(ft.Read) != 0 {
 		t.Fatalf("active-session should not mark read before claim; count = %d", len(ft.Read))
@@ -171,11 +169,50 @@ func TestRouterStoresActiveSessionMessageWithoutRunner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pendingOutbox) != 1 {
-		t.Fatalf("duplicate ack count = %d, want 1", len(pendingOutbox))
+	if len(pendingOutbox) != 0 {
+		t.Fatalf("duplicate queued active outbox = %+v", pendingOutbox)
 	}
 	if len(ft.Read) != 0 {
 		t.Fatalf("duplicate active-session read receipt count = %d, want 0", len(ft.Read))
+	}
+}
+
+func TestRouterActiveSessionVerboseAckQueuesWithoutRunner(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Active.AckMode = "verbose"
+	cfg.Groups = []config.GroupConfig{{
+		ID:      "1203630active@g.us",
+		Alias:   "codex-session",
+		Mode:    config.GroupModeActiveSession,
+		Enabled: true,
+	}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	result := r.Handle(t.Context(), types.IncomingMessage{
+		ID:        "msg-active-verbose",
+		ChatID:    "1203630active@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "380506171414@s.whatsapp.net",
+		Text:      "status",
+		RawText:   "status",
+		Timestamp: time.Now(),
+	})
+	if result.Ignored {
+		t.Fatalf("message was ignored: %s", result.Reason)
+	}
+	pendingOutbox, err := store.PendingActiveOutbox(t.Context(), "test", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pendingOutbox) != 1 || !strings.Contains(pendingOutbox[0].Text, "Queued for the active Codex session to claim") {
+		t.Fatalf("verbose ack = %+v", pendingOutbox)
 	}
 }
 
@@ -207,6 +244,7 @@ func TestRouterIgnoresRecentLongOutboxEcho(t *testing.T) {
 	}
 	ft := fake.New(nil)
 	r := New(cfg, store, ft)
+	r.activeFallbackDelay = 0
 	result := r.Handle(t.Context(), types.IncomingMessage{
 		ID:        "msg-echo",
 		ChatID:    "1203630active@g.us",
@@ -255,6 +293,7 @@ func TestRouterActiveSessionFallsBackToSafeRunnerWithoutWatcher(t *testing.T) {
 	defer store.Close()
 	ft := fake.New(nil)
 	r := New(cfg, store, ft)
+	r.activeFallbackDelay = 0
 	result := r.Handle(t.Context(), types.IncomingMessage{
 		ID:         "msg-active-fallback",
 		ChatID:     "1203630active@g.us",
@@ -293,8 +332,169 @@ func TestRouterActiveSessionFallsBackToSafeRunnerWithoutWatcher(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pendingOutbox) != 1 || !strings.Contains(pendingOutbox[0].Text, "Continuing this session through runner codex-active") {
+	if len(pendingOutbox) != 0 {
 		t.Fatalf("pending active outbox = %+v", pendingOutbox)
+	}
+}
+
+func TestRouterActiveSessionFallbackCombinesUnreadBurst(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Runner["codex-active"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
+		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+	}
+	group := config.GroupConfig{
+		ID:      "1203630active@g.us",
+		Alias:   "codex-session",
+		Runner:  "codex-active",
+		Mode:    config.GroupModeActiveSession,
+		Enabled: true,
+	}
+	cfg.Groups = []config.GroupConfig{group}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	now := time.Now()
+	for _, msg := range []types.IncomingMessage{
+		{
+			ID:         "msg-burst-1",
+			ChatID:     "1203630active@g.us",
+			ChatType:   types.ChatTypeGroup,
+			SenderID:   "380506171414@s.whatsapp.net",
+			SenderName: "Nick",
+			Text:       "[voice] mime=audio/ogg; codecs=opus seconds=5 transcript=first part from voice",
+			RawText:    "[voice] mime=audio/ogg; codecs=opus seconds=5 transcript=first part from voice",
+			Media: []types.MediaAttachment{{
+				Type:       "voice",
+				MIMEType:   "audio/ogg; codecs=opus",
+				LocalPath:  "/tmp/voice.ogg",
+				Transcript: "first part from voice",
+			}},
+			Timestamp: now,
+		},
+		{
+			ID:         "msg-burst-2",
+			ChatID:     "1203630active@g.us",
+			ChatType:   types.ChatTypeGroup,
+			SenderID:   "380506171414@s.whatsapp.net",
+			SenderName: "Nick",
+			Text:       "second part",
+			RawText:    "second part",
+			Timestamp:  now.Add(time.Second),
+		},
+	} {
+		if _, _, err := store.StoreActiveInboxMessage(t.Context(), "test", "codex-session", "codex-session", msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := r.processActiveSessionFallback(t.Context(), types.IncomingMessage{ChatID: "1203630active@g.us"}, group, "codex-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Ignored {
+		t.Fatalf("fallback ignored burst: %s", result.Reason)
+	}
+	if len(ft.Sent) != 1 {
+		t.Fatalf("sent = %+v", ft.Sent)
+	}
+	if !strings.Contains(ft.Sent[0].Text, "Multiple related WhatsApp messages") ||
+		!strings.Contains(ft.Sent[0].Text, "first part from voice") ||
+		!strings.Contains(ft.Sent[0].Text, "second part") {
+		t.Fatalf("combined send text = %q", ft.Sent[0].Text)
+	}
+	done, err := store.ListActiveInbox(t.Context(), "test", "done", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(done) != 2 {
+		t.Fatalf("done rows = %+v", done)
+	}
+	receipts, err := store.PendingActiveReadReceipts(t.Context(), "test", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(receipts) != 2 {
+		t.Fatalf("read receipts = %+v", receipts)
+	}
+}
+
+func TestRouterActiveSessionScheduledFallbackDrainsLaterUnreadRows(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Runner["codex-active"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
+		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+	}
+	cfg.Groups = []config.GroupConfig{{
+		ID:      "1203630active@g.us",
+		Alias:   "codex-session",
+		Runner:  "codex-active",
+		Mode:    config.GroupModeActiveSession,
+		Enabled: true,
+	}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	r.activeFallbackDelay = 5 * time.Millisecond
+	r.activeFallbackLimit = 1
+
+	first := r.Handle(t.Context(), types.IncomingMessage{
+		ID:        "msg-scheduled-1",
+		ChatID:    "1203630active@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "380506171414@s.whatsapp.net",
+		Text:      "first scheduled",
+		RawText:   "first scheduled",
+		Timestamp: time.Now(),
+	})
+	if first.Ignored || first.Reason != "active inbox fallback scheduled" {
+		t.Fatalf("first result = %+v", first)
+	}
+	second := r.Handle(t.Context(), types.IncomingMessage{
+		ID:        "msg-scheduled-2",
+		ChatID:    "1203630active@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "380506171414@s.whatsapp.net",
+		Text:      "second scheduled",
+		RawText:   "second scheduled",
+		Timestamp: time.Now().Add(time.Millisecond),
+	})
+	if second.Ignored || second.Reason != "active inbox fallback scheduled" {
+		t.Fatalf("second result = %+v", second)
+	}
+
+	waitForRouterCondition(t, 10*time.Second, func() bool {
+		done, err := store.ListActiveInbox(t.Context(), "test", "done", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(done) == 2
+	})
+	sent := ft.SentSnapshot()
+	if len(sent) != 2 || sent[0].Text != "router: first scheduled" || sent[1].Text != "router: second scheduled" {
+		t.Fatalf("sent = %+v", sent)
+	}
+	unread, err := store.ListActiveInbox(t.Context(), "test", "unread", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unread) != 0 {
+		t.Fatalf("unread rows left behind = %+v", unread)
 	}
 }
 
@@ -351,6 +551,7 @@ func TestRouterActiveSessionFallbackSkipsStaleClaimedRow(t *testing.T) {
 
 	ft := fake.New(nil)
 	r := New(cfg, store, ft)
+	r.activeFallbackDelay = 0
 	result := r.Handle(t.Context(), types.IncomingMessage{
 		ID:        "msg-current",
 		ChatID:    "1203630active@g.us",
@@ -520,6 +721,7 @@ func TestRouterActiveSessionRoutesPendingChoiceReplyThroughSafeFallback(t *testi
 	defer store.Close()
 	ft := fake.New(nil)
 	r := New(cfg, store, ft)
+	r.activeFallbackDelay = 0
 	if _, err := store.CreatePendingInteraction(t.Context(), db.PendingInteractionRecord{
 		ProfileID:       "test",
 		ChatID:          "1203630active@g.us",
@@ -603,6 +805,66 @@ func TestRouterPendingChoiceInvalidReplyKeepsInteraction(t *testing.T) {
 		t.Fatal(err)
 	} else if !ok {
 		t.Fatal("pending interaction should remain active")
+	}
+}
+
+func TestResolveInteractionReplyMatchesHumanLanguage(t *testing.T) {
+	record := db.PendingInteractionRecord{Options: []string{
+		"`LICENSE`, `NOTICE`, `THIRD_PARTY_LICENSES.md`",
+		"`SECURITY.md` with credential/session risks and WhatsApp account-risk warning",
+		"`PRIVACY.md` review: local storage, media, transcripts, deletion",
+		"`CONTRIBUTING.md` + `CODE_OF_CONDUCT.md`",
+		"GitHub issue templates and PR template",
+		"CI: test, build, lint, dependency/license check",
+		"Release workflow: goreleaser, checksums, signed artifacts later",
+		"Clear README disclaimer: local personal use, unofficial WhatsApp transport, no spam/bulk/surveillance",
+		"Architecture docs: transports, runner protocol, active-session relay",
+		"Example runners and config presets",
+	}}
+	cases := []struct {
+		text  string
+		index int
+	}{
+		{text: "`LICENSE`, `NOTICE`, `THIRD_PARTY_LICENSES.md`", index: 1},
+		{text: "Let's do SECURITY.md with the account-risk warning next", index: 2},
+		{text: "privacy: local storage/media/transcripts/deletion", index: 3},
+		{text: "contributing and code of conduct", index: 4},
+		{text: "github issue templates", index: 5},
+		{text: "CI please", index: 6},
+		{text: "release workflow with checksums", index: 7},
+		{text: "README disclaimer about no spam", index: 8},
+		{text: "architecture docs", index: 9},
+		{text: "example runners", index: 10},
+	}
+	for _, tc := range cases {
+		t.Run(tc.text, func(t *testing.T) {
+			_, index, ok := resolveInteractionReply(record, tc.text)
+			if !ok || index != tc.index {
+				t.Fatalf("resolveInteractionReply(%q) = ok=%t index=%d, want ok=true index=%d", tc.text, ok, index, tc.index)
+			}
+		})
+	}
+}
+
+func TestResolveInteractionReplyReportsAmbiguousHumanLanguage(t *testing.T) {
+	record := db.PendingInteractionRecord{Options: []string{
+		"Frontend documentation",
+		"Backend documentation",
+		"Release workflow",
+	}}
+	_, _, ok, ambiguous := resolveInteractionReplyDetail(record, "docs please")
+	if ok {
+		t.Fatal("ambiguous human reply should not resolve automatically")
+	}
+	if len(ambiguous) != 2 || ambiguous[0] != 1 || ambiguous[1] != 2 {
+		t.Fatalf("ambiguous matches = %+v, want [1 2]", ambiguous)
+	}
+	reply := ambiguousInteractionReply(record, ambiguous)
+	if !strings.Contains(reply, "That could mean more than one option") ||
+		!strings.Contains(reply, "1. Frontend documentation") ||
+		!strings.Contains(reply, "2. Backend documentation") ||
+		strings.Contains(reply, "Release workflow") {
+		t.Fatalf("ambiguous reply = %q", reply)
 	}
 }
 
@@ -895,6 +1157,21 @@ func TestRouterActiveSessionSenderAllowlistAcceptsAdmins(t *testing.T) {
 	if !ignored.Ignored || ignored.Reason != "sender is not allowlisted" {
 		t.Fatalf("unauthorized result = %+v", ignored)
 	}
+}
+
+func waitForRouterCondition(t *testing.T, timeout time.Duration, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if ok() {
+		return
+	}
+	t.Fatalf("condition not met within %s", timeout)
 }
 
 func TestRouterHelperProcess(t *testing.T) {

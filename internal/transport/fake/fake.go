@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/endurantdevs/codex-whatsapp/internal/transport"
-	"github.com/endurantdevs/codex-whatsapp/internal/types"
+	"github.com/dnikolayev/coderoam/internal/transport"
+	"github.com/dnikolayev/coderoam/internal/types"
 )
 
 type Transport struct {
@@ -110,6 +110,14 @@ func (t *Transport) SendText(ctx context.Context, chatID string, text string, op
 		ChatID: chatID,
 		SentAt: time.Now(),
 	}, nil
+}
+
+func (t *Transport) SentSnapshot() []Sent {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]Sent, len(t.Sent))
+	copy(out, t.Sent)
+	return out
 }
 
 func (t *Transport) MarkRead(ctx context.Context, msg types.IncomingMessage) error {

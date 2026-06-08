@@ -28,4 +28,4 @@ jobs:
         run: go test ./...
 
       - name: Build
-        run: go build -o bin/chat-bridge ./cmd/chat-bridge
+        run: go build -o bin/coderoam ./cmd/coderoam

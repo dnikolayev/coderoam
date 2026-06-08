@@ -7,7 +7,7 @@ release/
 *.out
 
 # Local app/profile data
-chat-bridge.sqlite3
+coderoam.sqlite3
 whatsapp-session.sqlite3
 *.sqlite3
 *.sqlite3-shm

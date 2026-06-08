@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/endurantdevs/codex-whatsapp/internal/types"
+	"github.com/dnikolayev/coderoam/internal/types"
 )
 
 func TestRecordIncomingMessageDeduplicates(t *testing.T) {
@@ -386,6 +386,63 @@ func TestActiveInboxClaimsOnlyMatchingSession(t *testing.T) {
 	}
 	if !ok || claimed.ExternalMessageID != msgA.ID {
 		t.Fatalf("session-a claim = %+v ok=%t", claimed, ok)
+	}
+}
+
+func TestActiveInboxBatchClaimKeepsSameSessionInsideChat(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now()
+	messages := []types.IncomingMessage{
+		{
+			ID:        "wa-a-1",
+			ChatID:    "chat-a@g.us",
+			SenderID:  "sender@s.whatsapp.net",
+			Text:      "first same chat",
+			Timestamp: now,
+		},
+		{
+			ID:        "wa-b-1",
+			ChatID:    "chat-b@g.us",
+			SenderID:  "sender@s.whatsapp.net",
+			Text:      "same session other chat",
+			Timestamp: now.Add(time.Second),
+		},
+		{
+			ID:        "wa-a-2",
+			ChatID:    "chat-a@g.us",
+			SenderID:  "sender@s.whatsapp.net",
+			Text:      "second same chat",
+			Timestamp: now.Add(2 * time.Second),
+		},
+	}
+	for _, msg := range messages {
+		if _, _, err := store.StoreActiveInboxMessage(t.Context(), "test", "codex-session", "codex-session", msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	claimed, err := store.ClaimActiveInboxBatchForSession(t.Context(), "test", "chat-a@g.us", "codex-session", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 2 {
+		t.Fatalf("claimed count = %d, want 2: %+v", len(claimed), claimed)
+	}
+	for _, record := range claimed {
+		if record.ChatID != "chat-a@g.us" || record.SessionID != "codex-session" || record.ClaimedBySessionID != "codex-session" {
+			t.Fatalf("claimed wrong row = %+v", record)
+		}
+	}
+	unread, err := store.ListActiveInbox(t.Context(), "test", "unread", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unread) != 1 || unread[0].ExternalMessageID != "wa-b-1" || unread[0].ChatID != "chat-b@g.us" {
+		t.Fatalf("remaining unread = %+v", unread)
 	}
 }
 

@@ -12,7 +12,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-const AppName = "chat-bridge"
+const AppName = "coderoam"
 
 const (
 	GroupModeRunner        = "runner"
@@ -23,6 +23,7 @@ type Config struct {
 	App         AppConfig               `toml:"app"`
 	Transport   TransportConfig         `toml:"transport"`
 	Trigger     TriggerConfig           `toml:"trigger"`
+	Active      ActiveConfig            `toml:"active"`
 	Security    SecurityConfig          `toml:"security"`
 	RateLimits  RateLimitConfig         `toml:"rate_limits"`
 	Reply       ReplyConfig             `toml:"reply"`
@@ -54,6 +55,12 @@ type TriggerConfig struct {
 	ReplyToBridge bool   `toml:"reply_to_bridge"`
 	AlwaysOn      bool   `toml:"always_on"`
 	AllowOwn      bool   `toml:"allow_own_messages"`
+}
+
+type ActiveConfig struct {
+	FallbackDelaySeconds int    `toml:"fallback_delay_seconds"`
+	FallbackBatchLimit   int    `toml:"fallback_batch_limit"`
+	AckMode              string `toml:"ack_mode"`
 }
 
 type SecurityConfig struct {
@@ -141,7 +148,7 @@ func Default() Config {
 	return Config{
 		App: AppConfig{
 			Profile:      "bot",
-			DatabasePath: "chat-bridge.sqlite3",
+			DatabasePath: "coderoam.sqlite3",
 			LogLevel:     "info",
 		},
 		Transport: TransportConfig{
@@ -152,6 +159,11 @@ func Default() Config {
 			Mode:          "prefix",
 			Prefix:        "@bridge",
 			ReplyToBridge: true,
+		},
+		Active: ActiveConfig{
+			FallbackDelaySeconds: 2,
+			FallbackBatchLimit:   8,
+			AckMode:              "minimal",
 		},
 		Security: SecurityConfig{
 			LocalOnly:                true,
@@ -271,6 +283,22 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Trigger.Prefix == "" {
 		cfg.Trigger.Prefix = defaults.Trigger.Prefix
 	}
+	if cfg.Active.FallbackDelaySeconds <= 0 {
+		cfg.Active.FallbackDelaySeconds = defaults.Active.FallbackDelaySeconds
+	}
+	if cfg.Active.FallbackBatchLimit <= 0 {
+		cfg.Active.FallbackBatchLimit = defaults.Active.FallbackBatchLimit
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Active.AckMode)) {
+	case "", "minimal":
+		cfg.Active.AckMode = "minimal"
+	case "verbose":
+		cfg.Active.AckMode = "verbose"
+	case "off":
+		cfg.Active.AckMode = "off"
+	default:
+		cfg.Active.AckMode = defaults.Active.AckMode
+	}
 	if cfg.RateLimits.MaxRunnerSeconds <= 0 {
 		cfg.RateLimits.MaxRunnerSeconds = defaults.RateLimits.MaxRunnerSeconds
 	}
@@ -329,17 +357,17 @@ func DefaultDataDir() string {
 func DefaultLogPath() string {
 	switch runtime.GOOS {
 	case "darwin":
-		return filepath.Join(homeDir(), "Library", "Logs", AppName, "chat-bridge.log")
+		return filepath.Join(homeDir(), "Library", "Logs", AppName, "coderoam.log")
 	case "windows":
 		if local := os.Getenv("LOCALAPPDATA"); local != "" {
-			return filepath.Join(local, AppName, "logs", "chat-bridge.log")
+			return filepath.Join(local, AppName, "logs", "coderoam.log")
 		}
 	default:
 		if state := os.Getenv("XDG_STATE_HOME"); state != "" {
-			return filepath.Join(state, AppName, "chat-bridge.log")
+			return filepath.Join(state, AppName, "coderoam.log")
 		}
 	}
-	return filepath.Join(homeDir(), ".local", "state", AppName, "chat-bridge.log")
+	return filepath.Join(homeDir(), ".local", "state", AppName, "coderoam.log")
 }
 
 func ProfileDir(profile string) string {

@@ -11,10 +11,10 @@ import (
 func TestShouldIgnoreAnswerUsesDefaultMarker(t *testing.T) {
 	t.Setenv("CLAUDE_RUNNER_IGNORE_MARKER", "")
 
-	if !shouldIgnoreAnswer("  [[chat-bridge-ignore]]\n") {
+	if !shouldIgnoreAnswer("  [[coderoam-ignore]]\n") {
 		t.Fatal("expected default ignore marker to be ignored")
 	}
-	if shouldIgnoreAnswer("[[chat-bridge-ignore]] extra") {
+	if shouldIgnoreAnswer("[[coderoam-ignore]] extra") {
 		t.Fatal("expected non-exact marker output to be sent")
 	}
 }
@@ -25,7 +25,7 @@ func TestShouldIgnoreAnswerUsesCustomMarker(t *testing.T) {
 	if !shouldIgnoreAnswer("IGNORE_ME") {
 		t.Fatal("expected custom ignore marker to be ignored")
 	}
-	if shouldIgnoreAnswer("[[chat-bridge-ignore]]") {
+	if shouldIgnoreAnswer("[[coderoam-ignore]]") {
 		t.Fatal("expected default marker not to match custom marker")
 	}
 }
@@ -88,7 +88,7 @@ func TestBuildPromptExplainsMissingAudioDownload(t *testing.T) {
 
 func TestBuildPromptIncludesAudioTranscript(t *testing.T) {
 	t.Setenv("CLAUDE_RUNNER_AUDIO_TRANSCRIBE_COMMAND", os.Args[0]+" -test.run=TestAudioTranscriberHelper -- {path}")
-	t.Setenv("CHAT_BRIDGE_TEST_AUDIO_TRANSCRIBER", "1")
+	t.Setenv("CODEROAM_TEST_AUDIO_TRANSCRIBER", "1")
 
 	req := transcribeAudioAttachments(context.Background(), request{
 		SenderID: "sender@s.whatsapp.net",
@@ -113,7 +113,7 @@ func TestBuildPromptIncludesAudioTranscript(t *testing.T) {
 }
 
 func TestAudioTranscriberHelper(t *testing.T) {
-	if os.Getenv("CHAT_BRIDGE_TEST_AUDIO_TRANSCRIBER") != "1" {
+	if os.Getenv("CODEROAM_TEST_AUDIO_TRANSCRIBER") != "1" {
 		return
 	}
 	fmt.Printf("transcribed %s\n", os.Args[len(os.Args)-1])

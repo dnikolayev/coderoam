@@ -1,11 +1,11 @@
 # Agent Relay Contract
 
 This document defines how local AI clients should consume WhatsApp input from
-`chat-bridge` and send important updates back to the WhatsApp group.
+`coderoam` and send important updates back to the WhatsApp group.
 
 ## Roles
 
-- `chat-bridge run` owns the WhatsApp connection.
+- `coderoam run` owns the WhatsApp connection.
 - Active-session inbox rows are scoped by `active_session_id`.
 - A live watcher is the preferred main path when the client can keep a process
   open and read its output.
@@ -18,11 +18,11 @@ This document defines how local AI clients should consume WhatsApp input from
 Use these commands from the workspace that owns the bridge:
 
 ```sh
-rtk ./codex-whatsapp/bin/chat-bridge active status
-rtk ./codex-whatsapp/bin/chat-bridge inbox watch --format prompt --session-id codex-session
-rtk ./codex-whatsapp/bin/chat-bridge inbox drain --format prompt --session-id codex-session
-rtk ./codex-whatsapp/bin/chat-bridge inbox done <id>
-rtk ./codex-whatsapp/bin/chat-bridge notify --chat codex-session --important --text "<message>"
+rtk ./coderoam/bin/coderoam active status
+rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id codex-session
+rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id codex-session
+rtk ./coderoam/bin/coderoam inbox done <id>
+rtk ./coderoam/bin/coderoam notify --chat codex-session --important --text "<message>"
 ```
 
 Rules:
@@ -36,7 +36,7 @@ Rules:
 - Normal `inbox next`, `drain`, and `watch` reads do not auto-recover old
   claimed rows. This prevents a stale prior message from being replayed ahead of
   a newer unread message. If a runner truly crashed before marking a row done,
-  recover it explicitly with `chat-bridge inbox recover`.
+  recover it explicitly with `coderoam inbox recover`.
 - Send WhatsApp notifications only for plan/checklist updates, blockers,
   questions requiring the owner, approval/input requests, or final summaries.
 - Do not send routine tool output, minor progress, or internal command logs.
@@ -47,7 +47,7 @@ Each active-session group is scoped by its own `active_session_id`. To create a
 new WhatsApp group for a separate work lane, run:
 
 ```sh
-rtk ./codex-whatsapp/bin/chat-bridge active start \
+rtk ./coderoam/bin/coderoam active start \
   --name "Claims QA" \
   --participants "+15550001111" \
   --alias claims-qa \
@@ -58,7 +58,7 @@ rtk ./codex-whatsapp/bin/chat-bridge active start \
 Then start a separate client or terminal watcher with that session id:
 
 ```sh
-rtk ./codex-whatsapp/bin/chat-bridge inbox watch --format prompt --session-id claims-qa
+rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id claims-qa
 ```
 
 Leave `--runner` unset unless you explicitly want a configured fallback runner
@@ -82,7 +82,7 @@ Media download is disabled by default. With `transport.download_media = true`,
 the bridge stores downloaded files under the local profile media directory and
 adds `local_path` lines to prompt output.
 
-With `transport.transcribe_audio = true`, chat-bridge runs
+With `transport.transcribe_audio = true`, coderoam runs
 `transport.audio_transcribe_command` after download and stores stdout as
 `media[].transcript`, so all runners receive the transcript directly. For
 voice/audio attachments without a transcript, transcribe the local file before
@@ -112,10 +112,12 @@ Reply with one option:
 3. Stop
 ```
 
-The owner may reply with the number or the option text. While the interaction
-is pending, that reply bypasses the normal trigger prefix and is sent back
-through the same route. In active-session mode, the selected answer is queued
-for the live client session. Native WhatsApp polls/buttons are optional future
+The owner may reply with the number, the option text, or clear natural language
+such as `privacy review` or `CI please`. While the interaction is pending, that
+reply bypasses the normal trigger prefix and is sent back through the same
+route. In active-session mode, the selected answer is queued for the live client
+session. If a reply matches multiple options, the bridge asks a narrower
+follow-up instead of guessing. Native WhatsApp polls/buttons are optional future
 UI; text selectors remain the reliable fallback.
 
 ## Runner-Delivered Prompts
@@ -130,7 +132,7 @@ If there is no important WhatsApp update, return the exact ignore marker the
 runner requested, usually:
 
 ```text
-[[chat-bridge-ignore]]
+[[coderoam-ignore]]
 ```
 
 ## Safety
@@ -148,20 +150,36 @@ runner requested, usually:
 Active-session path:
 
 ```text
-WhatsApp group -> chat-bridge daemon -> active inbox -> live watcher -> active client
+WhatsApp group -> coderoam daemon -> active inbox -> live watcher -> active client
 ```
 
 Safe fallback runner:
 
 ```text
-WhatsApp group -> chat-bridge daemon -> active inbox -> non-pinned runner -> reply
+WhatsApp group -> coderoam daemon -> active inbox -> short debounce -> non-pinned runner -> reply
 ```
 
 Pinned session runner:
 
 ```text
-WhatsApp group -> chat-bridge daemon -> active inbox -> unread until drain/watch
+WhatsApp group -> coderoam daemon -> active inbox -> unread until drain/watch
 ```
 
 Use a non-pinned runner for autonomous background replies. Use a pinned session
 runner only when messages must be claimed by the live client window.
+
+Fallback processing batches nearby unread messages for the same session into one
+combined user turn. Defaults:
+
+```toml
+[active]
+fallback_delay_seconds = 2
+fallback_batch_limit = 8
+ack_mode = "minimal"
+```
+
+`ack_mode = "minimal"` sends only a compact fallback status for the first
+message in a burst. `verbose` restores detailed `Received #...` messages.
+`off` suppresses active-session acknowledgements. Use
+`coderoam explain-last --chat <alias-or-id>` to inspect whether the latest
+message was queued, ignored, batched, blocked, or sent through fallback.

@@ -6,20 +6,20 @@ instructions.
 ```md
 ## Active WhatsApp Relay
 
-This workspace may receive WhatsApp input through `codex-whatsapp`.
+This workspace may receive WhatsApp input through `coderoam`.
 
 Required commands:
 
 - Status:
-  `rtk ./codex-whatsapp/bin/chat-bridge active status`
+  `rtk ./coderoam/bin/coderoam active status`
 - Live watch, when persistent stdout can be consumed:
-  `rtk ./codex-whatsapp/bin/chat-bridge inbox watch --format prompt --session-id codex-session`
+  `rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id codex-session`
 - Drain fallback:
-  `rtk ./codex-whatsapp/bin/chat-bridge inbox drain --format prompt --session-id codex-session`
+  `rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id codex-session`
 - Mark handled:
-  `rtk ./codex-whatsapp/bin/chat-bridge inbox done <id>`
+  `rtk ./coderoam/bin/coderoam inbox done <id>`
 - Important update:
-  `rtk ./codex-whatsapp/bin/chat-bridge notify --chat codex-session --important --text "<message>"`
+  `rtk ./coderoam/bin/coderoam notify --chat codex-session --important --text "<message>"`
 
 Rules:
 

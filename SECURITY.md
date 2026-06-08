@@ -14,7 +14,7 @@ Suggested report content:
 
 ## Threat Model
 
-`chat-bridge` is a local-first bridge. It should not expose a hosted API, scrape contacts, or provide third parties with access to a consumer WhatsApp account.
+`coderoam` is a local-first bridge. It should not expose a hosted API, scrape contacts, or provide third parties with access to a consumer WhatsApp account.
 
 The main risks are:
 
@@ -31,12 +31,12 @@ Encrypted storage through macOS Keychain, Linux Secret Service/libsecret, and Wi
 
 Default profile/session paths:
 
-- macOS: `~/Library/Application Support/chat-bridge/profiles/<profile>/`
-- Linux: `~/.config/chat-bridge/profiles/<profile>/`
-- Windows: `%APPDATA%\chat-bridge\profiles\<profile>\`
+- macOS: `~/Library/Application Support/coderoam/profiles/<profile>/`
+- Linux: `~/.config/coderoam/profiles/<profile>/`
+- Windows: `%APPDATA%\coderoam\profiles\<profile>\`
 
 Never commit files named like `whatsapp-session.sqlite3`,
-`chat-bridge.sqlite3`, `*.sqlite3-wal`, `*.sqlite3-shm`, or QR PNG images.
+`coderoam.sqlite3`, `*.sqlite3-wal`, `*.sqlite3-shm`, or QR PNG images.
 
 ## Runner Boundary
 
@@ -81,7 +81,7 @@ There is no guarantee of WhatsApp account safety. The personal-account transport
 To unlink the device, use WhatsApp on the phone: Settings -> Linked Devices -> select the linked device -> Log Out. You can also run:
 
 ```sh
-chat-bridge auth logout
+coderoam auth logout
 ```
 
 If you suspect the local session has leaked, unlink it from the phone first,

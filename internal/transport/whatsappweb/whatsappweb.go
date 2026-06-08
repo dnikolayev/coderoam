@@ -24,8 +24,8 @@ import (
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/endurantdevs/codex-whatsapp/internal/transport"
-	"github.com/endurantdevs/codex-whatsapp/internal/types"
+	"github.com/dnikolayev/coderoam/internal/transport"
+	"github.com/dnikolayev/coderoam/internal/types"
 )
 
 type Transport struct {
@@ -70,7 +70,7 @@ func NewWithOptions(ctx context.Context, sessionPath string, logLevel string, op
 	client := whatsmeow.NewClient(device, clientLog)
 	client.EnableAutoReconnect = true
 	if opts.MediaDir == "" {
-		opts.MediaDir = filepath.Join(os.TempDir(), "chat-bridge-media")
+		opts.MediaDir = filepath.Join(os.TempDir(), "coderoam-media")
 	}
 	transcribeTimeout := time.Duration(opts.AudioTranscribeTimeoutSeconds) * time.Second
 	if transcribeTimeout <= 0 {
@@ -97,7 +97,7 @@ func (t *Transport) Login(ctx context.Context, method types.LoginMethod) error {
 		if err := t.client.ConnectContext(ctx); err != nil {
 			return err
 		}
-		code, err := t.client.PairPhone(ctx, normalizePhone(method.PairCodePhone), true, whatsmeow.PairClientMacOS, "chat-bridge")
+		code, err := t.client.PairPhone(ctx, normalizePhone(method.PairCodePhone), true, whatsmeow.PairClientMacOS, "coderoam")
 		if err != nil {
 			return err
 		}
@@ -152,7 +152,7 @@ func (t *Transport) Login(ctx context.Context, method types.LoginMethod) error {
 
 func (t *Transport) Connect(ctx context.Context) error {
 	if t.client.Store.ID == nil {
-		return fmt.Errorf("WhatsApp is not logged in; run chat-bridge auth login --qr first")
+		return fmt.Errorf("WhatsApp is not logged in; run coderoam auth login --qr first")
 	}
 	if t.client.IsConnected() {
 		return nil

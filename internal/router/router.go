@@ -9,19 +9,22 @@ import (
 	"sync"
 	"time"
 
-	"github.com/endurantdevs/codex-whatsapp/internal/config"
-	"github.com/endurantdevs/codex-whatsapp/internal/db"
-	"github.com/endurantdevs/codex-whatsapp/internal/runner"
-	"github.com/endurantdevs/codex-whatsapp/internal/transport"
-	"github.com/endurantdevs/codex-whatsapp/internal/types"
+	"github.com/dnikolayev/coderoam/internal/config"
+	"github.com/dnikolayev/coderoam/internal/db"
+	"github.com/dnikolayev/coderoam/internal/runner"
+	"github.com/dnikolayev/coderoam/internal/transport"
+	"github.com/dnikolayev/coderoam/internal/types"
 )
 
 type Router struct {
-	cfg       config.Config
-	store     *db.Store
-	transport transport.ChatTransport
-	mu        sync.Mutex
-	groupMu   map[string]*sync.Mutex
+	cfg                     config.Config
+	store                   *db.Store
+	transport               transport.ChatTransport
+	mu                      sync.Mutex
+	groupMu                 map[string]*sync.Mutex
+	activeFallbackDelay     time.Duration
+	activeFallbackLimit     int
+	activeFallbackScheduled map[string]bool
 }
 
 type ProcessResult struct {
@@ -35,11 +38,15 @@ const recentOutboxEchoWindow = 6 * time.Hour
 const minOutboxEchoTextLength = 80
 
 func New(cfg config.Config, store *db.Store, chatTransport transport.ChatTransport) *Router {
+	config.ApplyDefaults(&cfg)
 	return &Router{
-		cfg:       cfg,
-		store:     store,
-		transport: chatTransport,
-		groupMu:   map[string]*sync.Mutex{},
+		cfg:                     cfg,
+		store:                   store,
+		transport:               chatTransport,
+		groupMu:                 map[string]*sync.Mutex{},
+		activeFallbackDelay:     time.Duration(cfg.Active.FallbackDelaySeconds) * time.Second,
+		activeFallbackLimit:     cfg.Active.FallbackBatchLimit,
+		activeFallbackScheduled: map[string]bool{},
 	}
 }
 
@@ -55,8 +62,10 @@ func (r *Router) Handle(ctx context.Context, msg types.IncomingMessage) ProcessR
 	defer lock.Unlock()
 	result, err := r.process(ctx, msg)
 	if err != nil {
-		return ProcessResult{Ignored: true, Reason: err.Error()}
+		result = ProcessResult{Ignored: true, Reason: err.Error()}
 	}
+	result = normalizeProcessResult(result)
+	r.auditRoute(ctx, msg, config.GroupConfig{}, result, nil)
 	return result
 }
 
@@ -104,9 +113,12 @@ func (r *Router) process(ctx context.Context, msg types.IncomingMessage) (Proces
 	if pending, ok, err := r.store.FindPendingInteraction(ctx, r.cfg.App.Profile, msg.ChatID, msg.SenderID); err != nil {
 		return ProcessResult{}, err
 	} else if ok {
-		selectedText, selectedIndex, valid := resolveInteractionReply(pending, msg.Text)
+		selectedText, selectedIndex, valid, ambiguous := resolveInteractionReplyDetail(pending, msg.Text)
 		if !valid {
 			reply := invalidInteractionReply(pending)
+			if len(ambiguous) > 0 {
+				reply = ambiguousInteractionReply(pending, ambiguous)
+			}
 			if sendErr := r.sendText(ctx, msg, 0, reply); sendErr != nil {
 				return ProcessResult{}, sendErr
 			}
@@ -135,36 +147,31 @@ func (r *Router) process(ctx context.Context, msg types.IncomingMessage) (Proces
 		if _, connected, err := r.store.ActiveWatcherFresh(ctx, r.cfg.App.Profile, sessionID, activeWatcherStaleAfter); err != nil {
 			return ProcessResult{}, err
 		} else if !connected && r.activeSessionFallbackAllowed(group.Runner) {
-			ack := fmt.Sprintf("Received #%d by bridge for session %s. Continuing this session through runner %s.", record.ID, sessionID, group.Runner)
-			if _, err := r.store.QueueActiveOutbox(ctx, r.cfg.App.Profile, msg.ChatID, ack, false); err != nil {
-				return ProcessResult{}, err
+			if r.activeFallbackDelay <= 0 {
+				return r.processActiveSessionFallback(ctx, msg, group, sessionID)
 			}
-			claimed, ok, err := r.store.ClaimNextActiveInboxForSession(ctx, r.cfg.App.Profile, sessionID)
-			if err != nil {
-				return ProcessResult{}, err
+			scheduled := r.scheduleActiveSessionFallback(msg, group, sessionID)
+			if scheduled && r.shouldSendActiveAck("fallback") {
+				ack := r.activeAckText("fallback", record.ID, sessionID, group.Runner)
+				if _, err := r.store.QueueActiveOutbox(ctx, r.cfg.App.Profile, msg.ChatID, ack, false); err != nil {
+					return ProcessResult{}, err
+				}
 			}
-			if !ok {
-				return ProcessResult{Ignored: true, Reason: "active inbox fallback found no unread message"}, nil
-			}
-			fallbackMsg := incomingFromActiveInbox(claimed, msg)
-			result, _, err := r.invokeRunnerAndSend(ctx, fallbackMsg, group, group.Runner, claimed.ID, claimed.Text, "")
-			if err != nil {
-				_ = r.store.MarkActiveInboxDone(ctx, r.cfg.App.Profile, claimed.ID, "ignored")
-				return ProcessResult{}, err
-			}
-			_ = r.store.MarkActiveInboxDone(ctx, r.cfg.App.Profile, claimed.ID, "done")
-			result.Reason = "active inbox fallback runner processed"
-			return result, nil
+			return ProcessResult{Reason: "active inbox fallback scheduled"}, nil
 		} else if connected {
-			ack := fmt.Sprintf("Received #%d by bridge for session %s. Queued for the live Codex session.", record.ID, sessionID)
-			if _, err := r.store.QueueActiveOutbox(ctx, r.cfg.App.Profile, msg.ChatID, ack, false); err != nil {
-				return ProcessResult{}, err
+			if r.shouldSendActiveAck("live") {
+				ack := r.activeAckText("live", record.ID, sessionID, group.Runner)
+				if _, err := r.store.QueueActiveOutbox(ctx, r.cfg.App.Profile, msg.ChatID, ack, false); err != nil {
+					return ProcessResult{}, err
+				}
 			}
 			return ProcessResult{Reason: "active inbox queued"}, nil
 		}
-		ack := fmt.Sprintf("Received #%d by bridge for session %s. Queued for the active Codex session to claim; it will stay pending until a live watcher or Codex drain reads it.", record.ID, sessionID)
-		if _, err := r.store.QueueActiveOutbox(ctx, r.cfg.App.Profile, msg.ChatID, ack, false); err != nil {
-			return ProcessResult{}, err
+		if r.shouldSendActiveAck("queued") {
+			ack := r.activeAckText("queued", record.ID, sessionID, group.Runner)
+			if _, err := r.store.QueueActiveOutbox(ctx, r.cfg.App.Profile, msg.ChatID, ack, false); err != nil {
+				return ProcessResult{}, err
+			}
 		}
 		return ProcessResult{Reason: "active inbox queued"}, nil
 	}
@@ -302,7 +309,138 @@ func (r *Router) invokeRunnerAndSend(ctx context.Context, msg types.IncomingMess
 			}
 		}
 	}
-	return ProcessResult{Sent: sent}, messageStatus, nil
+	return normalizeProcessResult(ProcessResult{Sent: sent}), messageStatus, nil
+}
+
+func (r *Router) scheduleActiveSessionFallback(msg types.IncomingMessage, group config.GroupConfig, sessionID string) bool {
+	delay := r.activeFallbackDelay
+	if delay < 0 {
+		delay = 0
+	}
+	key := activeFallbackScheduleKey(r.cfg.App.Profile, msg.ChatID, sessionID)
+	r.mu.Lock()
+	if r.activeFallbackScheduled == nil {
+		r.activeFallbackScheduled = map[string]bool{}
+	}
+	if r.activeFallbackScheduled[key] {
+		r.mu.Unlock()
+		return false
+	}
+	r.activeFallbackScheduled[key] = true
+	r.mu.Unlock()
+	go func() {
+		defer func() {
+			r.mu.Lock()
+			delete(r.activeFallbackScheduled, key)
+			r.mu.Unlock()
+		}()
+		for {
+			if delay > 0 {
+				timer := time.NewTimer(delay)
+				<-timer.C
+			}
+			lock := r.lockForGroup(msg.ChatID)
+			lock.Lock()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+			result, err := r.processActiveSessionFallback(ctx, msg, group, sessionID)
+			cancel()
+			lock.Unlock()
+			if err != nil {
+				result = ProcessResult{Ignored: true, Reason: err.Error()}
+			}
+			r.auditRoute(context.Background(), msg, group, result, map[string]any{"async_fallback": true})
+			if err != nil || result.Ignored || result.Reason == "active inbox fallback skipped because watcher connected" {
+				return
+			}
+		}
+	}()
+	return true
+}
+
+func normalizeProcessResult(result ProcessResult) ProcessResult {
+	if strings.TrimSpace(result.Reason) != "" {
+		return result
+	}
+	if result.Ignored {
+		result.Reason = "ignored"
+	} else if len(result.Sent) > 0 {
+		result.Reason = "runner processed"
+	} else {
+		result.Reason = "processed without reply"
+	}
+	return result
+}
+
+func (r *Router) processActiveSessionFallback(ctx context.Context, msg types.IncomingMessage, group config.GroupConfig, sessionID string) (ProcessResult, error) {
+	if _, connected, err := r.store.ActiveWatcherFresh(ctx, r.cfg.App.Profile, sessionID, activeWatcherStaleAfter); err != nil {
+		return ProcessResult{}, err
+	} else if connected {
+		return ProcessResult{Reason: "active inbox fallback skipped because watcher connected"}, nil
+	}
+	claimed, err := r.store.ClaimActiveInboxBatchForSession(ctx, r.cfg.App.Profile, msg.ChatID, sessionID, r.activeFallbackLimit)
+	if err != nil {
+		return ProcessResult{}, err
+	}
+	if len(claimed) == 0 {
+		return ProcessResult{Ignored: true, Reason: "active inbox fallback found no unread message"}, nil
+	}
+	fallbackMsg, text := incomingFromActiveInboxBatch(claimed, msg)
+	result, _, err := r.invokeRunnerAndSend(ctx, fallbackMsg, group, group.Runner, claimed[0].ID, text, "")
+	status := "done"
+	if err != nil {
+		status = "ignored"
+	}
+	for _, record := range claimed {
+		_ = r.store.MarkActiveInboxDone(ctx, r.cfg.App.Profile, record.ID, status)
+	}
+	if err != nil {
+		return ProcessResult{}, err
+	}
+	if len(claimed) > 1 {
+		result.Reason = "active inbox fallback batch processed"
+	} else {
+		result.Reason = "active inbox fallback runner processed"
+	}
+	return result, nil
+}
+
+func activeFallbackScheduleKey(profileID, chatID, sessionID string) string {
+	return strings.Join([]string{profileID, chatID, sessionID}, "\x00")
+}
+
+func (r *Router) activeAckMode() string {
+	mode := strings.ToLower(strings.TrimSpace(r.cfg.Active.AckMode))
+	switch mode {
+	case "off", "verbose":
+		return mode
+	default:
+		return "minimal"
+	}
+}
+
+func (r *Router) shouldSendActiveAck(kind string) bool {
+	switch r.activeAckMode() {
+	case "off":
+		return false
+	case "verbose":
+		return true
+	default:
+		return kind == "fallback"
+	}
+}
+
+func (r *Router) activeAckText(kind string, recordID int64, sessionID, runnerID string) string {
+	if r.activeAckMode() == "verbose" {
+		switch kind {
+		case "fallback":
+			return fmt.Sprintf("Received #%d by bridge for session %s. Waiting briefly for related messages, then continuing through runner %s.", recordID, sessionID, runnerID)
+		case "live":
+			return fmt.Sprintf("Received #%d by bridge for session %s. Queued for the live Codex session.", recordID, sessionID)
+		default:
+			return fmt.Sprintf("Received #%d by bridge for session %s. Queued for the active Codex session to claim; it will stay pending until a live watcher or Codex drain reads it.", recordID, sessionID)
+		}
+	}
+	return fmt.Sprintf("Working on this in session %s; grouping nearby messages briefly.", sessionID)
 }
 
 func (r *Router) activeSessionFallbackAllowed(runnerID string) bool {
@@ -349,6 +487,51 @@ func (r *Router) sendText(ctx context.Context, msg types.IncomingMessage, messag
 	return nil
 }
 
+func (r *Router) auditRoute(ctx context.Context, msg types.IncomingMessage, group config.GroupConfig, result ProcessResult, extra map[string]any) {
+	if r.store == nil || msg.ChatID == "" {
+		return
+	}
+	if group.ID == "" {
+		if resolved, ok := config.FindGroup(r.cfg, msg.ChatID); ok {
+			group = resolved
+		}
+	}
+	details := map[string]any{
+		"message_id":   msg.ID,
+		"sender_id":    msg.SenderID,
+		"reason":       result.Reason,
+		"ignored":      result.Ignored,
+		"sent_count":   len(result.Sent),
+		"chat_type":    msg.ChatType,
+		"is_from_me":   msg.IsFromMe,
+		"has_media":    len(msg.Media) > 0,
+		"text_preview": truncateForAudit(msg.Text, 160),
+	}
+	if group.ID != "" {
+		details["group_alias"] = group.Alias
+		details["group_mode"] = group.Mode
+		details["runner"] = group.Runner
+		details["active_session_id"] = config.ActiveSessionID(group)
+		details["relay_managed"] = group.RelayManaged
+		details["archived"] = group.Archived
+	}
+	for key, value := range extra {
+		details[key] = value
+	}
+	_ = r.store.Audit(ctx, r.cfg.App.Profile, "route_decision", msg.SenderID, msg.ChatID, details)
+}
+
+func truncateForAudit(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	if limit <= 3 {
+		return value[:limit]
+	}
+	return value[:limit-3] + "..."
+}
+
 func incomingFromActiveInbox(record db.ActiveInboxRecord, fallback types.IncomingMessage) types.IncomingMessage {
 	msg := fallback
 	msg.ID = record.ExternalMessageID
@@ -363,6 +546,39 @@ func incomingFromActiveInbox(record db.ActiveInboxRecord, fallback types.Incomin
 		msg.RawText = msg.Text
 	}
 	return msg
+}
+
+func incomingFromActiveInboxBatch(records []db.ActiveInboxRecord, fallback types.IncomingMessage) (types.IncomingMessage, string) {
+	if len(records) == 0 {
+		return fallback, strings.TrimSpace(fallback.Text)
+	}
+	if len(records) == 1 {
+		msg := incomingFromActiveInbox(records[0], fallback)
+		return msg, msg.Text
+	}
+	msg := incomingFromActiveInbox(records[0], fallback)
+	parts := []string{"Multiple related WhatsApp messages arrived close together. Treat them as one combined user turn:"}
+	media := []types.MediaAttachment{}
+	ids := []string{}
+	for i, record := range records {
+		label := fmt.Sprintf("Message %d", i+1)
+		if record.SenderName != "" {
+			label += " from " + record.SenderName
+		}
+		text := strings.TrimSpace(record.Text)
+		if text == "" {
+			text = strings.TrimSpace(record.RawText)
+		}
+		parts = append(parts, fmt.Sprintf("%s:\n%s", label, text))
+		media = append(media, record.Media...)
+		ids = append(ids, record.ExternalMessageID)
+	}
+	combined := strings.Join(parts, "\n\n")
+	msg.ID = strings.Join(ids, "+")
+	msg.Text = combined
+	msg.RawText = combined
+	msg.Media = media
+	return msg, combined
 }
 
 func (r *Router) senderAllowed(senderID string) bool {
@@ -500,22 +716,125 @@ func interactionTTL(action runner.Action) time.Duration {
 }
 
 func resolveInteractionReply(record db.PendingInteractionRecord, text string) (string, int, bool) {
+	selectedText, selectedIndex, valid, _ := resolveInteractionReplyDetail(record, text)
+	return selectedText, selectedIndex, valid
+}
+
+func resolveInteractionReplyDetail(record db.PendingInteractionRecord, text string) (string, int, bool, []int) {
 	value := strings.TrimSpace(text)
 	if value == "" {
-		return "", 0, false
+		return "", 0, false, nil
 	}
 	if len(record.Options) == 0 {
-		return value, 0, true
+		return value, 0, true, nil
 	}
 	if index, ok := parseChoiceIndex(value); ok && index >= 1 && index <= len(record.Options) {
-		return record.Options[index-1], index, true
+		return record.Options[index-1], index, true, nil
 	}
 	for i, option := range record.Options {
 		if strings.EqualFold(value, strings.TrimSpace(option)) {
-			return strings.TrimSpace(option), i + 1, true
+			return strings.TrimSpace(option), i + 1, true, nil
 		}
 	}
-	return "", 0, false
+	valueNorm := normalizeChoiceText(value)
+	valueTokens := meaningfulChoiceTokens(valueNorm)
+	bestIndex := -1
+	bestScore := 0
+	tied := []int{}
+	for i, option := range record.Options {
+		option = strings.TrimSpace(option)
+		score := choiceMatchScore(valueNorm, valueTokens, normalizeChoiceText(option))
+		if score > bestScore {
+			bestScore = score
+			bestIndex = i
+			tied = []int{i}
+		} else if score > 0 && score == bestScore {
+			tied = append(tied, i)
+		}
+	}
+	if bestIndex >= 0 && len(tied) == 1 {
+		return strings.TrimSpace(record.Options[bestIndex]), bestIndex + 1, true, nil
+	}
+	if len(tied) > 1 {
+		choices := make([]int, 0, len(tied))
+		for _, index := range tied {
+			choices = append(choices, index+1)
+		}
+		return "", 0, false, choices
+	}
+	return "", 0, false, nil
+}
+
+func choiceMatchScore(valueNorm string, valueTokens []string, optionNorm string) int {
+	if valueNorm == "" || optionNorm == "" {
+		return 0
+	}
+	if valueNorm == optionNorm {
+		return 1000
+	}
+	if len(optionNorm) >= 12 && strings.Contains(valueNorm, optionNorm) {
+		return 900
+	}
+	if len(valueNorm) >= 12 && strings.Contains(optionNorm, valueNorm) {
+		return 800
+	}
+	optionTokens := meaningfulChoiceTokens(optionNorm)
+	overlap := 0
+	for _, token := range valueTokens {
+		for _, optionToken := range optionTokens {
+			if token == optionToken {
+				overlap++
+				break
+			}
+		}
+	}
+	if overlap >= 2 {
+		return 100 + overlap
+	}
+	if overlap == 1 && len(valueTokens) == 1 {
+		return 50
+	}
+	return 0
+}
+
+func normalizeChoiceText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastSpace := false
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastSpace = false
+			continue
+		}
+		if !lastSpace {
+			b.WriteByte(' ')
+			lastSpace = true
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+func meaningfulChoiceTokens(value string) []string {
+	stop := map[string]bool{
+		"a": true, "an": true, "and": true, "for": true, "i": true, "in": true, "it": true,
+		"local": true, "md": true, "next": true, "of": true, "or": true, "please": true,
+		"review": true, "the": true, "this": true, "to": true, "with": true,
+	}
+	tokens := []string{}
+	seen := map[string]bool{}
+	for _, token := range strings.Fields(value) {
+		if len(token) < 2 || stop[token] || seen[token] {
+			continue
+		}
+		switch token {
+		case "doc", "docs":
+			token = "documentation"
+		}
+		seen[token] = true
+		tokens = append(tokens, token)
+	}
+	return tokens
 }
 
 func parseChoiceIndex(value string) (int, bool) {
@@ -548,11 +867,39 @@ func invalidInteractionReply(record db.PendingInteractionRecord) string {
 		return "I did not receive an answer. Reply with the text you want to send."
 	}
 	var b strings.Builder
-	b.WriteString("I did not recognize that choice. Reply with a number or option text:")
+	b.WriteString("I did not recognize that choice. Reply with a number")
+	if len(record.Options) > 0 {
+		b.WriteString(" or words from the option, for example: ")
+		b.WriteString(choiceExample(record.Options[0]))
+	}
+	b.WriteString(".")
 	for i, option := range record.Options {
 		b.WriteString(fmt.Sprintf("\n%d. %s", i+1, option))
 	}
 	return b.String()
+}
+
+func ambiguousInteractionReply(record db.PendingInteractionRecord, indexes []int) string {
+	var b strings.Builder
+	b.WriteString("That could mean more than one option. Which one?")
+	for _, index := range indexes {
+		if index <= 0 || index > len(record.Options) {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("\n%d. %s", index, record.Options[index-1]))
+	}
+	return b.String()
+}
+
+func choiceExample(option string) string {
+	tokens := meaningfulChoiceTokens(normalizeChoiceText(option))
+	if len(tokens) == 0 {
+		return "`1`"
+	}
+	if len(tokens) > 2 {
+		tokens = tokens[:2]
+	}
+	return "`" + strings.Join(tokens, " ") + "`"
 }
 
 func detectReplyInteraction(text string) ([]string, bool) {

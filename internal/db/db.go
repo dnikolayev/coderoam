@@ -15,7 +15,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/endurantdevs/codex-whatsapp/internal/types"
+	"github.com/dnikolayev/coderoam/internal/types"
 )
 
 type Store struct {
@@ -121,9 +121,20 @@ type PendingInteractionRecord struct {
 	SelectedText    string
 }
 
+type AuditEventRecord struct {
+	ID          int64
+	ProfileID   string
+	EventType   string
+	Actor       string
+	Target      string
+	DetailsJSON string
+	CreatedAt   time.Time
+}
+
 const activeInboxColumns = `id, profile_id, chat_id, chat_alias, session_id, sender_id, sender_name, external_message_id, text, raw_text, raw_json, status, received_at, claimed_at, claimed_by_session_id, done_at`
 const activeWatcherColumns = `profile_id, session_id, consumer_id, pid, status, started_at, heartbeat_at`
 const pendingInteractionColumns = `id, profile_id, chat_id, sender_id, runner_id, source_message_id, prompt, options_json, status, created_at, expires_at, answered_at, selected_index, selected_text`
+const auditEventColumns = `id, profile_id, event_type, actor, target, details_json, created_at`
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -134,6 +145,10 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	conn.SetMaxOpenConns(1)
+	if _, err := conn.ExecContext(context.Background(), `PRAGMA busy_timeout = 5000`); err != nil {
+		conn.Close()
+		return nil, err
+	}
 	store := &Store{db: conn}
 	if err := store.Migrate(context.Background()); err != nil {
 		conn.Close()
@@ -632,6 +647,84 @@ func (s *Store) ClaimNextActiveInboxForSession(ctx context.Context, profileID, s
 	record.ClaimedAt = &claimedAt
 	record.ClaimedBySessionID = sessionID
 	return record, true, nil
+}
+
+func (s *Store) ClaimActiveInboxBatchForSession(ctx context.Context, profileID, chatID, sessionID string, limit int) ([]ActiveInboxRecord, error) {
+	if limit <= 0 {
+		limit = 8
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	sessionID = strings.TrimSpace(sessionID)
+	query := `SELECT ` + activeInboxColumns + `
+		FROM active_inbox WHERE profile_id = ? AND chat_id = ? AND status = 'unread'`
+	args := []any{profileID, chatID}
+	if sessionID != "" {
+		query += ` AND (session_id = ? OR session_id = '')`
+		args = append(args, sessionID)
+	}
+	query += ` ORDER BY id LIMIT ?`
+	args = append(args, limit)
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	records := []ActiveInboxRecord{}
+	for rows.Next() {
+		record, err := scanActiveInbox(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(records) == 0 {
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return records, nil
+	}
+
+	now := formatTime(time.Now())
+	claimedAt, _ := time.Parse(time.RFC3339Nano, now)
+	claimed := []ActiveInboxRecord{}
+	for _, record := range records {
+		result, err := tx.ExecContext(ctx, `UPDATE active_inbox SET status = 'claimed', claimed_at = ?, claimed_by_session_id = ? WHERE id = ? AND status = 'unread'`, now, sessionID, record.ID)
+		if err != nil {
+			return nil, err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if affected == 0 {
+			continue
+		}
+		record.Status = "claimed"
+		record.ClaimedAt = &claimedAt
+		record.ClaimedBySessionID = sessionID
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO active_read_receipts
+			(profile_id, chat_id, sender_id, external_message_id, status, attempts, created_at)
+			VALUES (?, ?, ?, ?, 'pending', 0, ?)`,
+			record.ProfileID, record.ChatID, record.SenderID, record.ExternalMessageID, now); err != nil {
+			return nil, err
+		}
+		claimed = append(claimed, record)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return claimed, nil
 }
 
 func (s *Store) MarkActiveInboxDone(ctx context.Context, profileID string, id int64, status string) error {
@@ -1164,6 +1257,28 @@ func (s *Store) Audit(ctx context.Context, profileID, eventType, actor, target s
 	return err
 }
 
+func (s *Store) LatestAuditEvent(ctx context.Context, profileID, eventType, target string) (AuditEventRecord, bool, error) {
+	query := `SELECT ` + auditEventColumns + ` FROM audit_events WHERE profile_id = ?`
+	args := []any{profileID}
+	if eventType != "" {
+		query += ` AND event_type = ?`
+		args = append(args, eventType)
+	}
+	if target != "" {
+		query += ` AND target = ?`
+		args = append(args, target)
+	}
+	query += ` ORDER BY id DESC LIMIT 1`
+	record, err := scanAuditEvent(s.db.QueryRowContext(ctx, query, args...))
+	if errors.Is(err, sql.ErrNoRows) {
+		return AuditEventRecord{}, false, nil
+	}
+	if err != nil {
+		return AuditEventRecord{}, false, err
+	}
+	return record, true, nil
+}
+
 func TextHash(text string) string {
 	sum := sha256.Sum256([]byte(text))
 	return hex.EncodeToString(sum[:])
@@ -1308,6 +1423,19 @@ func scanPendingInteraction(row scanner) (PendingInteractionRecord, error) {
 		if parsed, err := time.Parse(time.RFC3339Nano, answeredAt.String); err == nil {
 			record.AnsweredAt = &parsed
 		}
+	}
+	return record, nil
+}
+
+func scanAuditEvent(row scanner) (AuditEventRecord, error) {
+	var record AuditEventRecord
+	var createdAt string
+	err := row.Scan(&record.ID, &record.ProfileID, &record.EventType, &record.Actor, &record.Target, &record.DetailsJSON, &createdAt)
+	if err != nil {
+		return AuditEventRecord{}, err
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, createdAt); err == nil {
+		record.CreatedAt = parsed
 	}
 	return record, nil
 }

@@ -11,11 +11,31 @@ import (
 	"testing"
 	"time"
 
-	"github.com/endurantdevs/codex-whatsapp/internal/config"
-	"github.com/endurantdevs/codex-whatsapp/internal/db"
-	"github.com/endurantdevs/codex-whatsapp/internal/transport/fake"
-	"github.com/endurantdevs/codex-whatsapp/internal/types"
+	"github.com/dnikolayev/coderoam/internal/config"
+	"github.com/dnikolayev/coderoam/internal/db"
+	"github.com/dnikolayev/coderoam/internal/transport/fake"
+	"github.com/dnikolayev/coderoam/internal/types"
 )
+
+func captureStdout(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+	original := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	err = fn()
+	if closeErr := writer.Close(); closeErr != nil && err == nil {
+		err = closeErr
+	}
+	os.Stdout = original
+	var out bytes.Buffer
+	if _, copyErr := io.Copy(&out, reader); copyErr != nil && err == nil {
+		err = copyErr
+	}
+	return out.String(), err
+}
 
 func TestBuildRunnerPresetEnablesImportantOnlyForResumableAssistants(t *testing.T) {
 	tests := []struct {
@@ -56,7 +76,7 @@ func TestBuildRunnerPresetEnablesImportantOnlyForResumableAssistants(t *testing.
 			if got := runner.Env[tt.importantKey]; got != "true" {
 				t.Fatalf("%s = %q, want true", tt.importantKey, got)
 			}
-			if got := runner.Env[tt.markerKey]; got != "[[chat-bridge-ignore]]" {
+			if got := runner.Env[tt.markerKey]; got != "[[coderoam-ignore]]" {
 				t.Fatalf("%s = %q, want default marker", tt.markerKey, got)
 			}
 		})
@@ -797,6 +817,61 @@ func TestShouldArchiveRelayGroupReasons(t *testing.T) {
 				t.Fatalf("shouldArchiveRelayGroup() = (%t, %q), want (%t, %q)", archive, reason, tc.archive, tc.reason)
 			}
 		})
+	}
+}
+
+func TestExplainLastShowsLatestRouteDecision(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Transport.Type = "fake"
+	cfg.Groups = []config.GroupConfig{{
+		ID:              "1203630active@g.us",
+		Alias:           "codex-session",
+		Runner:          "codex-active",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "codex-session",
+		Enabled:         true,
+	}}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Audit(t.Context(), cfg.App.Profile, "route_decision", "sender@s.whatsapp.net", "1203630active@g.us", map[string]any{
+		"message_id":        "wa-1",
+		"sender_id":         "sender@s.whatsapp.net",
+		"reason":            "active inbox fallback scheduled",
+		"ignored":           false,
+		"runner":            "codex-active",
+		"active_session_id": "codex-session",
+		"text_preview":      "continue please",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+	state := &cliState{configPath: path}
+	cmd := state.explainLastCommand()
+	cmd.SetArgs([]string{"--chat", "codex-session"})
+	out, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"chat: codex-session",
+		"reason: active inbox fallback scheduled",
+		"ignored: false",
+		"runner: codex-active",
+		"session: codex-session",
+		"text_preview: continue please",
+		"message_id: wa-1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("explain-last output missing %q:\n%s", want, out)
+		}
 	}
 }
 

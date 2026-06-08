@@ -1,6 +1,11 @@
-# chat-bridge
+# coderoam
 
-Local WhatsApp group bridge for CLI applications.
+Run each AI coding session in its own mobile group chat.
+
+`coderoam` is a local-first bridge between selected WhatsApp groups and local
+CLI coding agents. It lets you continue a coding session from your phone, invite
+other people into the session chat, and keep each work lane isolated in its own
+group.
 
 This project is a local personal automation bridge. It is not affiliated with,
 endorsed by, or authorized by WhatsApp or Meta.
@@ -22,7 +27,7 @@ runner protocol can still change before v1.0.
 
 Implemented:
 
-- Go CLI binary named `chat-bridge`.
+- Go CLI binary named `coderoam`.
 - Local config with conservative defaults.
 - WhatsApp Web transport using whatsmeow with QR and pair-code login.
 - Group allowlisting.
@@ -31,7 +36,7 @@ Implemented:
 - SQLite persistence for profiles, chats, senders, messages, runner invocations, outbox, and audit events.
 - Incoming message deduplication by WhatsApp message ID.
 - Fake transport and `test-route` for local testing without WhatsApp.
-- Kill switch through `chat-bridge pause`, `resume`, and `kill`.
+- Kill switch through `coderoam pause`, `resume`, and `kill`.
 - Direct `send --to ... --text ...` helper for one-off status messages from the linked account.
 - Local-confirmed group creation and invite-link sending.
 - Built-in Codex and Claude runner presets, including explicit coding modes.
@@ -64,8 +69,8 @@ Prerequisites:
 Build:
 
 ```sh
-go build -o bin/chat-bridge ./cmd/chat-bridge
-go build -o bin/chat-bridge-transcribe ./cmd/chat-bridge-transcribe
+go build -o bin/coderoam ./cmd/coderoam
+go build -o bin/coderoam-transcribe ./cmd/coderoam-transcribe
 go build -o bin/echo-runner ./examples/echo-runner
 go build -o bin/codex-runner ./examples/codex-runner
 go build -o bin/claude-runner ./examples/claude-runner
@@ -74,13 +79,13 @@ go build -o bin/claude-runner ./examples/claude-runner
 Initialize local config:
 
 ```sh
-bin/chat-bridge init
+bin/coderoam init
 ```
 
 Configure a runner:
 
 ```sh
-bin/chat-bridge runners add default \
+bin/coderoam runners add default \
   --mode process-once-json \
   --command /path/to/your/runner
 ```
@@ -88,7 +93,7 @@ bin/chat-bridge runners add default \
 To connect WhatsApp messages to Codex CLI, use the included `codex-runner` wrapper:
 
 ```sh
-bin/chat-bridge runners add default \
+bin/coderoam runners add default \
   --mode process-once-json \
   --command "$(pwd)/bin/codex-runner"
 ```
@@ -96,13 +101,13 @@ bin/chat-bridge runners add default \
 The easier path is a built-in preset:
 
 ```sh
-bin/chat-bridge runners preset codex --id default --workdir /path/to/workspace
+bin/coderoam runners preset codex --id default --workdir /path/to/workspace
 ```
 
 To let Codex edit files in that workspace from WhatsApp, explicitly choose the coding preset:
 
 ```sh
-bin/chat-bridge runners preset codex-code \
+bin/coderoam runners preset codex-code \
   --id default \
   --workdir /path/to/workspace \
   --yes
@@ -115,24 +120,24 @@ back to WhatsApp, such as plan/checklist changes, blockers, questions that need
 the user, approval/input requests, or final summaries:
 
 ```sh
-bin/chat-bridge runners preset codex-active \
+bin/coderoam runners preset codex-active \
   --id codex-active \
   --workdir /path/to/workspace \
   --yes
 
-bin/chat-bridge groups set-runner "1203630xxxxx@g.us" codex-active
+bin/coderoam groups set-runner "1203630xxxxx@g.us" codex-active
 ```
 
 For a specific Codex session id:
 
 ```sh
-bin/chat-bridge runners preset codex-session \
+bin/coderoam runners preset codex-session \
   --id codex-session \
   --workdir /path/to/workspace \
   --session-id "019e..." \
   --yes
 
-bin/chat-bridge groups set-runner "1203630xxxxx@g.us" codex-session
+bin/coderoam groups set-runner "1203630xxxxx@g.us" codex-session
 ```
 
 Use a specific session id if you need to avoid accidentally resuming another
@@ -143,20 +148,20 @@ WhatsApp input locally and lets the active Codex session pull it between work
 chunks:
 
 ```sh
-bin/chat-bridge active enable "1203630xxxxx@g.us" \
+bin/coderoam active enable "1203630xxxxx@g.us" \
   --alias codex-session \
   --session-id codex-session
-bin/chat-bridge groups set-runner "1203630xxxxx@g.us" codex-active
-bin/chat-bridge inbox watch --format prompt --session-id codex-session
-bin/chat-bridge inbox done 1
-bin/chat-bridge notify --chat codex-session --important --text "Plan updated..."
+bin/coderoam groups set-runner "1203630xxxxx@g.us" codex-active
+bin/coderoam inbox watch --format prompt --session-id codex-session
+bin/coderoam inbox done 1
+bin/coderoam notify --chat codex-session --important --text "Plan updated..."
 ```
 
 To start another parallel work lane, create a dedicated WhatsApp group and bind
 it to a unique active session id:
 
 ```sh
-bin/chat-bridge active start \
+bin/coderoam active start \
   --name "Claims QA" \
   --participants "+15550001111" \
   --alias claims-qa \
@@ -168,7 +173,7 @@ Then run a watcher for that session id in the Codex window that should own that
 work lane:
 
 ```sh
-bin/chat-bridge inbox watch --format prompt --session-id claims-qa
+bin/coderoam inbox watch --format prompt --session-id claims-qa
 ```
 
 `active start` leaves the fallback runner blank by default, so messages stay
@@ -177,7 +182,7 @@ to use a configured fallback runner if no watcher is connected.
 
 Groups created by `active start` are relay-managed. Each session should have its
 own group, alias, and `active_session_id`. If a participant leaves that managed
-group, the group is deleted, or only the bridge account remains, `chat-bridge
+group, the group is deleted, or only the bridge account remains, `coderoam
 run` leaves/archives the chat on the linked WhatsApp device, disables and marks
 the local group entry archived, and deletes per-chat operational rows such as
 active inbox, active outbox, pending interactions, messages, invocations, and
@@ -190,21 +195,33 @@ Archived relay-managed groups cannot be re-enabled; use `active start` to make a
 fresh group.
 
 The relay avoids running `codex exec resume` while another Codex turn is active.
-`chat-bridge run` owns the WhatsApp connection and sends queued notifications
-from the active outbox. Each fresh active-session WhatsApp message also gets an
-automatic queued acknowledgement so the group is never left silent while Codex
-has not pulled the inbox yet. Active inbox rows are tagged with a session id so
+`coderoam run` owns the WhatsApp connection and sends queued notifications
+from the active outbox. Active inbox rows are tagged with a session id so
 multiple active agent sessions do not claim each other's WhatsApp input. For
 active-session groups, the bridge sends a WhatsApp read receipt only after
-`chat-bridge inbox watch --session-id <id>`,
-`chat-bridge inbox next --session-id <id>`, or
-`chat-bridge inbox drain --session-id <id>` claims the message for that active
-agent session. Until then, the bridge acknowledgement says the message is
-waiting for that session to claim it. `inbox watch` keeps one exclusive local
-consumer connected per session and emits claimed messages immediately; use
-`--format jsonl` for machine-readable local agent integrations. Media-only
-messages are queued with local metadata/captions rather than downloaded by
-default.
+`coderoam inbox watch --session-id <id>`,
+`coderoam inbox next --session-id <id>`, or
+`coderoam inbox drain --session-id <id>` claims the message for that active
+agent session. `inbox watch` keeps one exclusive local consumer connected per
+session and emits claimed messages immediately; use `--format jsonl` for
+machine-readable local agent integrations. Media-only messages are queued with
+local metadata/captions rather than downloaded by default.
+
+When no live watcher is connected and the active-session group has a safe
+fallback runner, the bridge waits briefly for related WhatsApp messages and
+sends them to the runner as one combined turn. Configure this behavior with:
+
+```toml
+[active]
+fallback_delay_seconds = 2
+fallback_batch_limit = 8
+ack_mode = "minimal" # minimal | verbose | off
+```
+
+The default `minimal` acknowledgement mode sends one short fallback status
+message per burst and suppresses routine "received" messages for live watchers
+or groups with no safe fallback runner. Use `verbose` to restore detailed
+`Received #...` messages, or `off` to suppress active-session acknowledgements.
 
 To let agents inspect voice notes or other media, explicitly enable local media
 download:
@@ -213,7 +230,7 @@ download:
 [transport]
 download_media = true
 transcribe_audio = true
-audio_transcribe_command = "/path/to/chat-bridge-transcribe --model /path/to/ggml-base.en.bin"
+audio_transcribe_command = "/path/to/coderoam-transcribe --model /path/to/ggml-base.en.bin"
 audio_transcribe_timeout_seconds = 120
 ```
 
@@ -221,7 +238,7 @@ Downloaded files stay in the local profile media directory, and prompt output
 includes `local_path` lines for agent tooling. If an audio attachment only shows
 metadata, the file was not downloaded or the download failed.
 
-When `transcribe_audio` is enabled, chat-bridge runs the configured local command
+When `transcribe_audio` is enabled, coderoam runs the configured local command
 after download and stores stdout as `media[].transcript`, so runners receive the
 transcript directly in JSON and prompt output. The command receives the audio
 path as the final argument unless it contains a `{path}` placeholder.
@@ -241,6 +258,15 @@ without surfacing it in the open window. Pinned session runners stay queued for
 `inbox watch`, `inbox next`, or `inbox drain` instead. Use `codex-code` or
 another non-pinned runner when you want automatic background WhatsApp replies.
 
+To inspect the last routing decision for a chat, run:
+
+```sh
+bin/coderoam explain-last --chat codex-session
+```
+
+This reports whether the last message was queued, ignored, blocked, batched, or
+sent to a fallback runner, with redacted sender/chat identifiers.
+
 Reusable client instructions live in:
 
 - `docs/AGENT_RELAY.md`
@@ -254,13 +280,13 @@ Reusable client instructions live in:
 Claude Code is supported through `claude-runner`:
 
 ```sh
-bin/chat-bridge runners preset claude --id default --workdir /path/to/workspace
+bin/coderoam runners preset claude --id default --workdir /path/to/workspace
 ```
 
 To let Claude edit files in that workspace from WhatsApp:
 
 ```sh
-bin/chat-bridge runners preset claude-code \
+bin/coderoam runners preset claude-code \
   --id default \
   --workdir /path/to/workspace \
   --yes
@@ -269,8 +295,8 @@ bin/chat-bridge runners preset claude-code \
 Switch the allowlisted group to a configured runner:
 
 ```sh
-bin/chat-bridge groups set-runner "1203630xxxxx@g.us" codex-code
-bin/chat-bridge groups set-runner "1203630xxxxx@g.us" claude-code
+bin/coderoam groups set-runner "1203630xxxxx@g.us" codex-code
+bin/coderoam groups set-runner "1203630xxxxx@g.us" claude-code
 ```
 
 Claude support requires the local Claude CLI to be logged in first:
@@ -289,7 +315,7 @@ important WhatsApp updates: plan/checklist changes, blockers, questions that
 need the user, approval/input requests, or final summaries. If there is no
 important update, the assistant is instructed to return the exact ignore marker.
 The wrapper converts that marker into a runner `ignore` action, and
-`chat-bridge` sends no WhatsApp message.
+`coderoam` sends no WhatsApp message.
 
 Enabled by built-in presets:
 
@@ -309,7 +335,7 @@ Optional runner environment variables:
 - `CODEX_RUNNER_SYSTEM_PROMPT`: instruction prepended to WhatsApp messages.
 - `CODEX_RUNNER_APPROVAL_POLICY`: optional Codex approval policy; coding presets use `never`.
 - `CODEX_RUNNER_IMPORTANT_ONLY`: set to `true` to suppress routine WhatsApp replies.
-- `CODEX_RUNNER_IGNORE_MARKER`: exact marker that means "send no WhatsApp reply"; default `[[chat-bridge-ignore]]`.
+- `CODEX_RUNNER_IGNORE_MARKER`: exact marker that means "send no WhatsApp reply"; default `[[coderoam-ignore]]`.
 - `CODEX_RUNNER_AUDIO_TRANSCRIBE_COMMAND`: optional local command that receives a downloaded audio path and writes the transcript to stdout.
 - `CODEX_RUNNER_AUDIO_TRANSCRIBE_TIMEOUT_SECONDS`: optional audio transcription timeout; default `120`.
 - `CLAUDE_RUNNER_WORKDIR`: working directory for `claude -p`.
@@ -317,7 +343,7 @@ Optional runner environment variables:
 - `CLAUDE_RUNNER_PERMISSION_MODE`: Claude permission mode, default `default`.
 - `CLAUDE_RUNNER_SYSTEM_PROMPT`: instruction prepended to WhatsApp messages.
 - `CLAUDE_RUNNER_IMPORTANT_ONLY`: set to `true` to suppress routine WhatsApp replies.
-- `CLAUDE_RUNNER_IGNORE_MARKER`: exact marker that means "send no WhatsApp reply"; default `[[chat-bridge-ignore]]`.
+- `CLAUDE_RUNNER_IGNORE_MARKER`: exact marker that means "send no WhatsApp reply"; default `[[coderoam-ignore]]`.
 - `CLAUDE_RUNNER_AUDIO_TRANSCRIBE_COMMAND`: optional local command that receives a downloaded audio path and writes the transcript to stdout.
 - `CLAUDE_RUNNER_AUDIO_TRANSCRIBE_TIMEOUT_SECONDS`: optional audio transcription timeout; default `120`.
 
@@ -326,8 +352,8 @@ Optional runner environment variables:
 When using active-session mode, WhatsApp messages are queued into the local
 inbox for the currently active Codex session. Slash commands such as `/goal ...`
 are not executed by the daemon itself. They are highlighted by
-`chat-bridge inbox next --format prompt` and
-`chat-bridge inbox watch --format prompt --session-id <id>` so the active agent
+`coderoam inbox next --format prompt` and
+`coderoam inbox watch --format prompt --session-id <id>` so the active agent
 session treats them as explicit user commands after it claims the inbox row.
 
 This avoids running a second competing Codex process while one Codex turn is
@@ -351,33 +377,33 @@ after the transcript is available and the sender is authorized.
 Login with WhatsApp:
 
 ```sh
-bin/chat-bridge auth login --profile bot --qr
+bin/coderoam auth login --profile bot --qr
 ```
 
 By default, QR login also writes and opens a PNG image:
 
 ```text
-~/Library/Application Support/chat-bridge/profiles/bot/whatsapp-session.sqlite3.qr.png
+~/Library/Application Support/coderoam/profiles/bot/whatsapp-session.sqlite3.qr.png
 ```
 
 You can choose the QR image path or disable auto-open:
 
 ```sh
-bin/chat-bridge auth login --qr --qr-image /tmp/chat-bridge-qr.png --open-qr=false
+bin/coderoam auth login --qr --qr-image /tmp/coderoam-qr.png --open-qr=false
 ```
 
 Pair-code login is also available if your WhatsApp account supports it:
 
 ```sh
-bin/chat-bridge auth login --pair-code "+380XXXXXXXXX"
+bin/coderoam auth login --pair-code "+380XXXXXXXXX"
 ```
 
 If WhatsApp reports `401: logged out from another device`, reset the local
 session before linking again:
 
 ```sh
-bin/chat-bridge auth reset --yes
-bin/chat-bridge auth login --qr
+bin/coderoam auth reset --yes
+bin/coderoam auth login --qr
 ```
 
 This deletes only the WhatsApp session files for the active profile. It does not
@@ -386,20 +412,20 @@ delete the app config, allowed groups, runner config, or message database.
 List groups:
 
 ```sh
-bin/chat-bridge chats list --groups
+bin/coderoam chats list --groups
 ```
 
 Allow one group:
 
 ```sh
-bin/chat-bridge groups allow "1203630xxxxx@g.us" --alias "test-group"
+bin/coderoam groups allow "1203630xxxxx@g.us" --alias "test-group"
 ```
 
 If the bridge account is not in any group yet, you can create a small local test
 group from the terminal:
 
 ```sh
-bin/chat-bridge groups create \
+bin/coderoam groups create \
   --name "Codex Bridge" \
   --participants "+380506171414" \
   --alias "codex" \
@@ -414,13 +440,13 @@ If WhatsApp creates the group but cannot add the participant because of privacy
 settings, send an invite link:
 
 ```sh
-bin/chat-bridge groups send-invite "1203630xxxxx@g.us" --to "+380506171414"
+bin/coderoam groups send-invite "1203630xxxxx@g.us" --to "+380506171414"
 ```
 
 Run the bridge:
 
 ```sh
-bin/chat-bridge run
+bin/coderoam run
 ```
 
 When someone in the allowlisted group sends:
@@ -436,12 +462,12 @@ the bridge sends `ping` to the configured local runner and posts the runner repl
 The fake transport allows testing the route without WhatsApp:
 
 ```sh
-bin/chat-bridge --config /tmp/chat-bridge.toml init
-bin/chat-bridge --config /tmp/chat-bridge.toml runners add default \
+bin/coderoam --config /tmp/coderoam.toml init
+bin/coderoam --config /tmp/coderoam.toml runners add default \
   --mode process-once-json \
   --command "$(pwd)/bin/echo-runner"
-bin/chat-bridge --config /tmp/chat-bridge.toml groups allow "fake-group@g.us" --alias fake
-bin/chat-bridge --config /tmp/chat-bridge.toml test-route \
+bin/coderoam --config /tmp/coderoam.toml groups allow "fake-group@g.us" --alias fake
+bin/coderoam --config /tmp/coderoam.toml test-route \
   --chat "fake-group@g.us" \
   --sender "380506171414@s.whatsapp.net" \
   --text "@bridge ping"
@@ -494,25 +520,27 @@ agent needs the owner to select from options:
 ```
 
 The bridge stores a pending interaction and sends a numbered WhatsApp menu.
-The owner can reply with `1`, `2`, or the option text; that answer is routed
-back to the same runner without requiring the normal trigger prefix.
+The owner can reply with `1`, `2`, the option text, or clear natural language
+such as `privacy review` or `CI please`; that answer is routed back to the same
+runner without requiring the normal trigger prefix. If the answer matches more
+than one option, the bridge asks a narrower follow-up instead of guessing.
 
 ## Sending a One-Off Message
 
 After WhatsApp login succeeds, this sends from the linked bridge account:
 
 ```sh
-bin/chat-bridge send --to "+380506171414" --text "chat-bridge is ready"
+bin/coderoam send --to "+380506171414" --text "coderoam is ready"
 ```
 
 ## Storage
 
 Default paths:
 
-- macOS config: `~/Library/Application Support/chat-bridge/config.toml`
-- macOS app database: `~/Library/Application Support/chat-bridge/profiles/<profile>/chat-bridge.sqlite3`
-- macOS WhatsApp session database: `~/Library/Application Support/chat-bridge/profiles/<profile>/whatsapp-session.sqlite3`
-- macOS logs: `~/Library/Logs/chat-bridge/chat-bridge.log`
+- macOS config: `~/Library/Application Support/coderoam/config.toml`
+- macOS app database: `~/Library/Application Support/coderoam/profiles/<profile>/coderoam.sqlite3`
+- macOS WhatsApp session database: `~/Library/Application Support/coderoam/profiles/<profile>/whatsapp-session.sqlite3`
+- macOS logs: `~/Library/Logs/coderoam/coderoam.log`
 
 WhatsApp session material is stored outside the repository. Do not commit profile data or session databases.
 
@@ -537,4 +565,4 @@ Before publishing a repository or release, check:
 - Direct messages are ignored by the router unless configured through a group/chat allowlist path.
 - The default trigger is `@bridge`; always-on mode is disabled.
 - The app never shells out with WhatsApp text. It invokes a fixed configured executable and sends message content on stdin.
-- The kill switch file stops message processing: `chat-bridge pause` creates it and `chat-bridge resume` removes it.
+- The kill switch file stops message processing: `coderoam pause` creates it and `coderoam resume` removes it.

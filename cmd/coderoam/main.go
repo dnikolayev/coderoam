@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/endurantdevs/codex-whatsapp/internal/app"
+	"github.com/dnikolayev/coderoam/internal/app"
 )
 
 func main() {

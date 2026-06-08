@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/endurantdevs/codex-whatsapp/internal/config"
-	"github.com/endurantdevs/codex-whatsapp/internal/types"
+	"github.com/dnikolayev/coderoam/internal/config"
+	"github.com/dnikolayev/coderoam/internal/types"
 )
 
 const ProtocolVersion = "1.0"
@@ -25,13 +25,13 @@ type ChatInfo struct {
 }
 
 type MessageInfo struct {
-	ID              string `json:"id"`
-	Timestamp       string `json:"timestamp"`
-	Text            string `json:"text"`
-	Trigger         string `json:"trigger,omitempty"`
-	RawText         string `json:"raw_text"`
+	ID              string                  `json:"id"`
+	Timestamp       string                  `json:"timestamp"`
+	Text            string                  `json:"text"`
+	Trigger         string                  `json:"trigger,omitempty"`
+	RawText         string                  `json:"raw_text"`
 	Media           []types.MediaAttachment `json:"media,omitempty"`
-	IsReplyToBridge bool   `json:"is_reply_to_bridge"`
+	IsReplyToBridge bool                    `json:"is_reply_to_bridge"`
 }
 
 type SenderInfo struct {
@@ -67,12 +67,12 @@ type Request struct {
 	Context   RequestContext `json:"context,omitempty"`
 
 	// Short fields are included for minimal runners.
-	ChatID   string      `json:"chat_id"`
-	SenderID string      `json:"sender_id"`
-	Text     string      `json:"text"`
-	RawText  string      `json:"raw_text"`
+	ChatID   string                  `json:"chat_id"`
+	SenderID string                  `json:"sender_id"`
+	Text     string                  `json:"text"`
+	RawText  string                  `json:"raw_text"`
 	Media    []types.MediaAttachment `json:"media,omitempty"`
-	Session  SessionInfo `json:"session"`
+	Session  SessionInfo             `json:"session"`
 }
 
 type Response struct {

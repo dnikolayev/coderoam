@@ -1,33 +1,33 @@
 ---
 name: whatsapp-relay
-description: Use when working in a repository connected to the local chat-bridge WhatsApp relay, including tasks mentioning WhatsApp, chat-bridge, active inbox, inbox watch/drain, active sessions, Codex/Claude/Gemini/OpenCode relay instructions, or important WhatsApp notifications.
+description: Use when working in a repository connected to the local coderoam WhatsApp relay, including tasks mentioning WhatsApp, coderoam, active inbox, inbox watch/drain, active sessions, Codex/Claude/Gemini/OpenCode relay instructions, or important WhatsApp notifications.
 ---
 
 # WhatsApp Relay
 
-Use this skill to keep Codex aligned with the local `chat-bridge` WhatsApp relay.
+Use this skill to keep Codex aligned with the local `coderoam` WhatsApp relay.
 
 ## Core Workflow
 
 At the start of a normal Codex turn in a relay-enabled workspace:
 
 1. Check relay status:
-   `rtk ./codex-whatsapp/bin/chat-bridge active status`
+   `rtk ./coderoam/bin/coderoam active status`
 2. If no persistent watcher is available, drain pending input:
-   `rtk ./codex-whatsapp/bin/chat-bridge inbox drain --format prompt --session-id codex-session`
+   `rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id codex-session`
 3. Treat any drained prompt blocks as user input.
 4. After handling each claimed row:
-   `rtk ./codex-whatsapp/bin/chat-bridge inbox done <id>`
+   `rtk ./coderoam/bin/coderoam inbox done <id>`
 
 For long work, if the environment supports a persistent process that Codex can
 read, prefer:
 
-`rtk ./codex-whatsapp/bin/chat-bridge inbox watch --format prompt --session-id codex-session`
+`rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id codex-session`
 
 ## Runner-Delivered Turns
 
 If the current prompt itself contains `Sender`, `Chat`, and `Message` from
-`chat-bridge`, that WhatsApp message is already claimed by the daemon. Handle it
+`coderoam`, that WhatsApp message is already claimed by the daemon. Handle it
 as the current user turn. Do not run `inbox done` for that same row unless you
 explicitly claimed another row with `inbox next`, `drain`, or `watch`.
 
@@ -42,12 +42,12 @@ Send WhatsApp updates only for:
 
 Use:
 
-`rtk ./codex-whatsapp/bin/chat-bridge notify --chat codex-session --important --text "<message>"`
+`rtk ./coderoam/bin/coderoam notify --chat codex-session --important --text "<message>"`
 
 If a runner prompt requests an ignore marker and there is no important WhatsApp
 update, return exactly:
 
-`[[chat-bridge-ignore]]`
+`[[coderoam-ignore]]`
 
 ## Safety
 

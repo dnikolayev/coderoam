@@ -3,7 +3,7 @@ package transport
 import (
 	"context"
 
-	"github.com/endurantdevs/codex-whatsapp/internal/types"
+	"github.com/dnikolayev/coderoam/internal/types"
 )
 
 type MessageHandler func(context.Context, types.IncomingMessage)

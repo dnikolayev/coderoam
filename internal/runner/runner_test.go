@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/endurantdevs/codex-whatsapp/internal/config"
+	"github.com/dnikolayev/coderoam/internal/config"
 )
 
 func TestProcessOnceJSONRunner(t *testing.T) {

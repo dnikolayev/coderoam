@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible chat-bridge bug.
+description: Report a reproducible coderoam bug.
 title: "bug: "
 labels: ["bug"]
 body:

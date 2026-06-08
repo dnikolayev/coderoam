@@ -20,7 +20,7 @@ func main() {
 	timeout := flag.Duration("timeout", 120*time.Second, "transcription timeout")
 	flag.Parse()
 	if flag.NArg() != 1 {
-		exitf("usage: chat-bridge-transcribe [flags] <audio-path>")
+		exitf("usage: coderoam-transcribe [flags] <audio-path>")
 	}
 	transcript, err := transcribe(flag.Arg(0), *model, *whisperBin, *ffmpegBin, *language, *timeout)
 	if err != nil {
@@ -42,7 +42,7 @@ func transcribe(inputPath, modelPath, whisperBin, ffmpegBin, language string, ti
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	tmpDir, err := os.MkdirTemp("", "chat-bridge-transcribe-*")
+	tmpDir, err := os.MkdirTemp("", "coderoam-transcribe-*")
 	if err != nil {
 		return "", err
 	}
@@ -93,7 +93,7 @@ func run(ctx context.Context, name string, args []string) error {
 }
 
 func defaultModelPath() string {
-	if value := strings.TrimSpace(os.Getenv("CHAT_BRIDGE_WHISPER_MODEL")); value != "" {
+	if value := strings.TrimSpace(os.Getenv("CODEROAM_WHISPER_MODEL")); value != "" {
 		return value
 	}
 	home, err := os.UserHomeDir()

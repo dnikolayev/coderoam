@@ -11,7 +11,7 @@ import (
 	waProto "go.mau.fi/whatsmeow/proto/waE2E"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/endurantdevs/codex-whatsapp/internal/types"
+	"github.com/dnikolayev/coderoam/internal/types"
 )
 
 func TestExtractTextAndMediaIncludesImageCaption(t *testing.T) {
@@ -77,11 +77,11 @@ func TestExtractTextAndMediaDetectsVoiceMessage(t *testing.T) {
 }
 
 func TestTranscribeAudioAttachmentsAddsTranscript(t *testing.T) {
-	if os.Getenv("CHAT_BRIDGE_TEST_AUDIO_TRANSCRIBER") == "1" {
+	if os.Getenv("CODEROAM_TEST_AUDIO_TRANSCRIBER") == "1" {
 		fmt.Printf("transcribed %s", os.Args[len(os.Args)-1])
 		os.Exit(0)
 	}
-	t.Setenv("CHAT_BRIDGE_TEST_AUDIO_TRANSCRIBER", "1")
+	t.Setenv("CODEROAM_TEST_AUDIO_TRANSCRIBER", "1")
 	media := transcribeAudioAttachments(t.Context(), []types.MediaAttachment{{
 		Type:      "voice",
 		MIMEType:  "audio/ogg; codecs=opus",

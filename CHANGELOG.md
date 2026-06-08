@@ -17,11 +17,11 @@ protocols.
 - Open-source publication docs, support policy, release guide, GitHub templates,
   CI workflow, and repository ignore rules.
 - Active-session slash-command authorization labels in the inbox prompt.
-- `chat-bridge inbox drain` for claiming all unread active-session WhatsApp
+- `coderoam inbox drain` for claiming all unread active-session WhatsApp
   input at the start of a Codex turn.
 - Session-aware active inbox rows and `--session-id` claim flags for active
   Codex relay sessions.
-- `chat-bridge inbox watch` for long-running, exclusive, session-scoped active
+- `coderoam inbox watch` for long-running, exclusive, session-scoped active
   inbox delivery to local agents.
 - Active-session groups can now fall back to their configured runner when no
   live watcher is connected.

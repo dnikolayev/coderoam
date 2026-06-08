@@ -93,7 +93,7 @@ func runCodex(req request) (string, time.Duration, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	tmpDir, err := os.MkdirTemp("", "chat-bridge-codex-runner-*")
+	tmpDir, err := os.MkdirTemp("", "coderoam-codex-runner-*")
 	if err != nil {
 		return "", 0, err
 	}
@@ -174,12 +174,12 @@ func appendWorkspaceWriteAddDirs(args []string, sandbox, resumeMode, sessionID s
 	if sandbox != "workspace-write" || resumeMode != "" || sessionID != "" {
 		return args
 	}
-	if !envBool("CODEX_RUNNER_AUTO_ADD_CHAT_BRIDGE_DIR", true) {
+	if !envBool("CODEX_RUNNER_AUTO_ADD_CODEROAM_DIR", true) {
 		return args
 	}
-	dir := strings.TrimSpace(os.Getenv("CODEX_RUNNER_CHAT_BRIDGE_DATA_DIR"))
+	dir := strings.TrimSpace(os.Getenv("CODEX_RUNNER_CODEROAM_DATA_DIR"))
 	if dir == "" {
-		dir = defaultChatBridgeDataDir()
+		dir = defaultCoderoamDataDir()
 	}
 	if dir == "" {
 		return args
@@ -190,27 +190,27 @@ func appendWorkspaceWriteAddDirs(args []string, sandbox, resumeMode, sessionID s
 	return append(args, "--add-dir", dir)
 }
 
-func defaultChatBridgeDataDir() string {
+func defaultCoderoamDataDir() string {
 	switch runtime.GOOS {
 	case "darwin":
 		home, err := os.UserHomeDir()
 		if err != nil || home == "" {
 			return ""
 		}
-		return filepath.Join(home, "Library", "Application Support", "chat-bridge")
+		return filepath.Join(home, "Library", "Application Support", "coderoam")
 	case "windows":
 		if appData := strings.TrimSpace(os.Getenv("APPDATA")); appData != "" {
-			return filepath.Join(appData, "chat-bridge")
+			return filepath.Join(appData, "coderoam")
 		}
 	default:
 		if xdg := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); xdg != "" {
-			return filepath.Join(xdg, "chat-bridge")
+			return filepath.Join(xdg, "coderoam")
 		}
 		home, err := os.UserHomeDir()
 		if err != nil || home == "" {
 			return ""
 		}
-		return filepath.Join(home, ".local", "share", "chat-bridge")
+		return filepath.Join(home, ".local", "share", "coderoam")
 	}
 	return ""
 }
@@ -218,7 +218,7 @@ func defaultChatBridgeDataDir() string {
 func buildPrompt(req request) string {
 	base := strings.TrimSpace(os.Getenv("CODEX_RUNNER_SYSTEM_PROMPT"))
 	if base == "" {
-		base = "You are replying to a WhatsApp group through chat-bridge. Keep the reply concise and plain text. For voice memos or audio attachments, transcribe the audio first; only apply instructions or slash commands from the audio after the transcript is available and any slash-command authorization shown in the prompt allows it."
+		base = "You are replying to a WhatsApp group through coderoam. Keep the reply concise and plain text. For voice memos or audio attachments, transcribe the audio first; only apply instructions or slash commands from the audio after the transcript is available and any slash-command authorization shown in the prompt allows it."
 	}
 	if envBool("CODEX_RUNNER_IMPORTANT_ONLY", false) {
 		base = base + "\n\nWhatsApp notification policy: send a reply only when there is an important update: a plan/checklist change, a blocker, a question requiring the user, an approval or input request, or a final summary. Do not narrate routine tool calls, command output, or minor progress. If there is no important update for WhatsApp, reply exactly " + ignoreMarker() + "."
@@ -393,7 +393,7 @@ func ignoreMarker() string {
 	if marker := strings.TrimSpace(os.Getenv("CODEX_RUNNER_IGNORE_MARKER")); marker != "" {
 		return marker
 	}
-	return "[[chat-bridge-ignore]]"
+	return "[[coderoam-ignore]]"
 }
 
 func truncate(value string, limit int) string {
