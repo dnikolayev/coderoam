@@ -6,6 +6,22 @@ protocols.
 
 ## Unreleased
 
+## v0.1.9 - 2026-06-09
+
+### Changed
+
+- The large CLI command implementation is split into smaller command-focused
+  files for easier review and maintenance.
+- WhatsApp transport decision logic is extracted from live transport plumbing so
+  parsing, QR event handling, read-receipt targets, and group validation can be
+  tested without a live client.
+
+### Fixed
+
+- Scheduled active-session fallback goroutines now stop deterministically before
+  the router closes its database store, avoiding shutdown-time closed-database
+  errors.
+
 ## v0.1.8 - 2026-06-09
 
 ### Added
