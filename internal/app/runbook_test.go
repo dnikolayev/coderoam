@@ -8,6 +8,7 @@ import (
 )
 
 func TestWriteRunbookSectionFreshFile(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "CLAUDE.md")
 	existed, err := writeRunbookSection(path, "BODY")
 	if err != nil {
@@ -30,6 +31,7 @@ func TestWriteRunbookSectionFreshFile(t *testing.T) {
 }
 
 func TestWriteRunbookSectionIdempotentUpdate(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "AGENTS.md")
 	if _, err := writeRunbookSection(path, "V1"); err != nil {
 		t.Fatal(err)
@@ -52,6 +54,7 @@ func TestWriteRunbookSectionIdempotentUpdate(t *testing.T) {
 }
 
 func TestWriteRunbookSectionPreservesExistingContent(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "CLAUDE.md")
 	if err := os.WriteFile(path, []byte("# My own instructions\n\nKeep me.\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -79,6 +82,7 @@ func TestWriteRunbookSectionPreservesExistingContent(t *testing.T) {
 }
 
 func TestAgentRunbookFiles(t *testing.T) {
+	t.Parallel()
 	cases := map[string][]string{
 		"claude":   {"CLAUDE.md"},
 		"codex":    {"AGENTS.md"},
@@ -102,6 +106,7 @@ func TestAgentRunbookFiles(t *testing.T) {
 }
 
 func TestRelayRunbookExplainsSessionIsolation(t *testing.T) {
+	t.Parallel()
 	for _, want := range []string{
 		"Pick THIS client's session id",
 		"Do not reuse another client's session id",

@@ -43,6 +43,7 @@ func captureStdout(t *testing.T, fn func() error) (string, error) {
 }
 
 func TestBuildRunnerPresetEnablesImportantOnlyForResumableAssistants(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		sessionID    string
@@ -79,6 +80,7 @@ func TestBuildRunnerPresetEnablesImportantOnlyForResumableAssistants(t *testing.
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			runner, err := buildRunnerPreset(tt.name, t.TempDir(), 120, "", "", tt.sessionID, "", nil, "")
 			if err != nil {
 				t.Fatal(err)
@@ -94,8 +96,10 @@ func TestBuildRunnerPresetEnablesImportantOnlyForResumableAssistants(t *testing.
 }
 
 func TestBuildRunnerPresetCodexCodingPresetsAreNonInteractive(t *testing.T) {
+	t.Parallel()
 	for _, preset := range []string{"codex-code", "codex-active", "codex-session"} {
 		t.Run(preset, func(t *testing.T) {
+			t.Parallel()
 			runner, err := buildRunnerPreset(preset, t.TempDir(), 120, "", "", "session-id", "", nil, "")
 			if err != nil {
 				t.Fatal(err)
@@ -108,6 +112,7 @@ func TestBuildRunnerPresetCodexCodingPresetsAreNonInteractive(t *testing.T) {
 }
 
 func TestBuildRunnerPresetAgentCliPresetsUseGenericRunner(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		command string
@@ -119,6 +124,7 @@ func TestBuildRunnerPresetAgentCliPresetsUseGenericRunner(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			runner, err := buildRunnerPreset(tt.name, t.TempDir(), 120, "", "", "", tt.command, []string{"--once"}, "")
 			if tt.name != "agent" {
 				runner, err = buildRunnerPreset(tt.name, t.TempDir(), 120, "", "", "", "", nil, "")
@@ -385,6 +391,7 @@ func TestSetupWizardConfiguresActiveSessionWithConfirmedAuthorizedNumber(t *test
 }
 
 func TestSetupAuthorizedConfirmationRequiresExactNumber(t *testing.T) {
+	t.Parallel()
 	var out bytes.Buffer
 	_, err := setupCollectAuthorized(bufio.NewReader(strings.NewReader("+15550009999\n")), &out, "+15550001111", true, false)
 	if err == nil {
@@ -483,6 +490,7 @@ func TestServiceCommandDryRunPrintsInstallPlan(t *testing.T) {
 }
 
 func TestBuildServiceTargetDarwinLaunchAgent(t *testing.T) {
+	t.Parallel()
 	opts := resolvedServiceOptions{
 		serviceOptions: normalizeServiceOptions(serviceOptions{
 			SessionID:    "codex-session",
@@ -526,6 +534,7 @@ func TestBuildServiceTargetDarwinLaunchAgent(t *testing.T) {
 }
 
 func TestBuildServiceTargetLinuxSystemdUnit(t *testing.T) {
+	t.Parallel()
 	opts := resolvedServiceOptions{
 		serviceOptions: normalizeServiceOptions(serviceOptions{
 			SessionID:    "codex-session",
@@ -564,6 +573,7 @@ func TestBuildServiceTargetLinuxSystemdUnit(t *testing.T) {
 }
 
 func TestBuildServiceTargetWindowsSchtasksCommands(t *testing.T) {
+	t.Parallel()
 	opts := resolvedServiceOptions{
 		serviceOptions: normalizeServiceOptions(serviceOptions{
 			SessionID:    "codex-session",
@@ -668,6 +678,7 @@ func TestDoctorWarnsAboutBroadProfileAndSessionPermissions(t *testing.T) {
 }
 
 func TestPlannedTransportStatusExplainsUnavailableAdapter(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.Transport.Type = "telegram"
 	state := &cliState{}
@@ -785,6 +796,7 @@ printf '%s\n' '{"version":"1.0","actions":[{"type":"reply","text":"runner: appro
 }
 
 func TestSendPendingActiveOutboxUsesBridgeTransport(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -821,6 +833,7 @@ func TestSendPendingActiveOutboxUsesBridgeTransport(t *testing.T) {
 }
 
 func TestSendPendingActiveReadReceiptsUsesBridgeTransport(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -864,6 +877,7 @@ func TestSendPendingActiveReadReceiptsUsesBridgeTransport(t *testing.T) {
 }
 
 func TestWatchActiveInboxClaimsMatchingSessionJSONL(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -960,6 +974,7 @@ func TestWatchActiveInboxClaimsMatchingSessionJSONL(t *testing.T) {
 }
 
 func TestWatchActiveInboxSkipsStaleClaimedRow(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	dbPath := filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -1130,6 +1145,7 @@ func TestInboxDrainRequiresSessionWhenMultipleActiveSessions(t *testing.T) {
 }
 
 func TestWriteInboxRecordIncludesLocalAudioAttachment(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	record := db.ActiveInboxRecord{
 		ID:                7,
@@ -1161,6 +1177,7 @@ func TestWriteInboxRecordIncludesLocalAudioAttachment(t *testing.T) {
 }
 
 func TestWriteInboxRecordIncludesLocalImageAttachment(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	record := db.ActiveInboxRecord{
 		ID:                10,
@@ -1195,6 +1212,7 @@ func TestWriteInboxRecordIncludesLocalImageAttachment(t *testing.T) {
 }
 
 func TestWriteInboxRecordExplainsMissingImageDownload(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	record := db.ActiveInboxRecord{
 		ID:                11,
@@ -1227,6 +1245,7 @@ func TestWriteInboxRecordExplainsMissingImageDownload(t *testing.T) {
 }
 
 func TestWriteInboxRecordIncludesAudioTranscript(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	record := db.ActiveInboxRecord{
 		ID:                9,
@@ -1262,6 +1281,7 @@ func TestWriteInboxRecordIncludesAudioTranscript(t *testing.T) {
 }
 
 func TestWriteInboxRecordDefersSlashCommandWhenAudioAttached(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.Security.AdminSenderIDs = []string{"sender@s.whatsapp.net"}
 	record := db.ActiveInboxRecord{
@@ -1297,6 +1317,7 @@ func TestWriteInboxRecordDefersSlashCommandWhenAudioAttached(t *testing.T) {
 }
 
 func TestGroupsSetRunnerPreservesActiveSessionMode(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
 	cfg.Runner["codex-session"] = config.RunnerConfig{
@@ -1540,6 +1561,7 @@ func TestActiveStartReactivatesArchivedManagedSessionGroup(t *testing.T) {
 }
 
 func TestActiveEnableManagedPreservesRunner(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -1579,6 +1601,7 @@ func TestActiveEnableManagedPreservesRunner(t *testing.T) {
 }
 
 func TestActiveEnableRejectsArchivedManagedGroup(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -1607,6 +1630,7 @@ func TestActiveEnableRejectsArchivedManagedGroup(t *testing.T) {
 }
 
 func TestRelayGroupLeaveArchivesManagedSessionGroup(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -1683,6 +1707,7 @@ func TestRelayGroupLeaveArchivesManagedSessionGroup(t *testing.T) {
 }
 
 func TestShouldArchiveRelayGroupReasons(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		event   types.GroupEvent
@@ -1716,6 +1741,7 @@ func TestShouldArchiveRelayGroupReasons(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			archive, reason := shouldArchiveRelayGroup(tc.event)
 			if archive != tc.archive || reason != tc.reason {
 				t.Fatalf("shouldArchiveRelayGroup() = (%t, %q), want (%t, %q)", archive, reason, tc.archive, tc.reason)
@@ -1780,6 +1806,7 @@ func TestExplainLastShowsLatestRouteDecision(t *testing.T) {
 }
 
 func TestParseInboxSlashCommandDetectsGoal(t *testing.T) {
+	t.Parallel()
 	command, value, ok := parseInboxSlashCommand("/goal prepare project for publishing")
 	if !ok {
 		t.Fatal("expected slash command")
@@ -1793,6 +1820,7 @@ func TestParseInboxSlashCommandDetectsGoal(t *testing.T) {
 }
 
 func TestParseInboxSlashCommandIgnoresPlainText(t *testing.T) {
+	t.Parallel()
 	_, _, ok := parseInboxSlashCommand("prepare project")
 	if ok {
 		t.Fatal("plain text should not be treated as slash command")
@@ -1800,6 +1828,7 @@ func TestParseInboxSlashCommandIgnoresPlainText(t *testing.T) {
 }
 
 func TestSlashCommandSenderAuthorization(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.Security.AdminSenderIDs = []string{"admin@lid"}
 	cfg.Security.AllowedSenderIDs = []string{"allowed@s.whatsapp.net"}

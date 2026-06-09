@@ -14,6 +14,7 @@ import (
 )
 
 func TestExtractBaseText(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		message *waProto.Message
@@ -58,6 +59,7 @@ func TestExtractBaseText(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := extractBaseText(tt.message); got != tt.want {
 				t.Fatalf("extractBaseText = %q, want %q", got, tt.want)
 			}
@@ -66,6 +68,7 @@ func TestExtractBaseText(t *testing.T) {
 }
 
 func TestExtractMedia(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		message *waProto.Message
@@ -122,6 +125,7 @@ func TestExtractMedia(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			media := extractMedia(tt.message)
 			if tt.want == nil {
 				if len(media) != 0 {
@@ -140,6 +144,7 @@ func TestExtractMedia(t *testing.T) {
 }
 
 func TestExtractTextAndMediaMediaWithoutText(t *testing.T) {
+	t.Parallel()
 	text, media := extractForTest(t, &waProto.Message{
 		DocumentMessage: &waProto.DocumentMessage{
 			Mimetype: proto.String("application/zip"),
@@ -158,6 +163,7 @@ func TestExtractTextAndMediaMediaWithoutText(t *testing.T) {
 // unwraps it via UnwrapRaw before dispatching the event, so the transport must
 // extract from the unwrapped Message. This test pins that contract.
 func TestExtractTextAndMediaEphemeralWrappedCaption(t *testing.T) {
+	t.Parallel()
 	evt := &events.Message{
 		RawMessage: &waProto.Message{
 			EphemeralMessage: &waProto.FutureProofMessage{
@@ -185,6 +191,7 @@ func TestExtractTextAndMediaEphemeralWrappedCaption(t *testing.T) {
 
 // View-once messages get the same upstream unwrapping treatment.
 func TestExtractTextAndMediaViewOnceWrappedVoiceNote(t *testing.T) {
+	t.Parallel()
 	evt := &events.Message{
 		RawMessage: &waProto.Message{
 			ViewOnceMessageV2: &waProto.FutureProofMessage{
@@ -217,6 +224,7 @@ func TestExtractTextAndMediaViewOnceWrappedVoiceNote(t *testing.T) {
 // Edits arrive wrapped in EditedMessage; after UnwrapRaw the transport sees
 // the replacement text like any other message.
 func TestExtractTextAndMediaEditedMessage(t *testing.T) {
+	t.Parallel()
 	evt := &events.Message{
 		RawMessage: &waProto.Message{
 			EditedMessage: &waProto.FutureProofMessage{
@@ -241,6 +249,7 @@ func TestExtractTextAndMediaEditedMessage(t *testing.T) {
 }
 
 func TestCombineTextAndMedia(t *testing.T) {
+	t.Parallel()
 	media := []types.MediaAttachment{{Type: "image", MIMEType: "image/png"}}
 	tests := []struct {
 		name  string
@@ -256,6 +265,7 @@ func TestCombineTextAndMedia(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := combineTextAndMedia(tt.text, tt.media); got != tt.want {
 				t.Fatalf("combineTextAndMedia = %q, want %q", got, tt.want)
 			}
@@ -264,6 +274,7 @@ func TestCombineTextAndMedia(t *testing.T) {
 }
 
 func TestFormatMediaSummaryFallbacksAndErrors(t *testing.T) {
+	t.Parallel()
 	text := formatMediaSummary([]types.MediaAttachment{
 		{DownloadError: "download blew up"},
 		{Type: "voice", TranscriptError: "whisper failed"},
@@ -281,6 +292,7 @@ func TestFormatMediaSummaryFallbacksAndErrors(t *testing.T) {
 }
 
 func TestMediaFileName(t *testing.T) {
+	t.Parallel()
 	name := mediaFileName("3EB0/AB#C?", 0, types.MediaAttachment{Type: "voice", MIMEType: "audio/ogg"})
 	if name != "3EB0_AB_C-01-voice.ogg" {
 		t.Fatalf("name = %q", name)
@@ -292,6 +304,7 @@ func TestMediaFileName(t *testing.T) {
 }
 
 func TestMediaExtension(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		mime string
 		want string
@@ -307,6 +320,7 @@ func TestMediaExtension(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.mime, func(t *testing.T) {
+			t.Parallel()
 			if got := mediaExtension(types.MediaAttachment{MIMEType: tt.mime}); got != tt.want {
 				t.Fatalf("mediaExtension(%q) = %q, want %q", tt.mime, got, tt.want)
 			}
@@ -315,6 +329,7 @@ func TestMediaExtension(t *testing.T) {
 }
 
 func TestTranscriberCommand(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		command  string
@@ -353,6 +368,7 @@ func TestTranscriberCommand(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			name, args := transcriberCommand(tt.command, tt.path)
 			if name != tt.wantName {
 				t.Fatalf("name = %q, want %q", name, tt.wantName)
@@ -365,6 +381,7 @@ func TestTranscriberCommand(t *testing.T) {
 }
 
 func TestIsAudioAttachment(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		item types.MediaAttachment
@@ -379,6 +396,7 @@ func TestIsAudioAttachment(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := isAudioAttachment(tt.item); got != tt.want {
 				t.Fatalf("isAudioAttachment(%+v) = %t, want %t", tt.item, got, tt.want)
 			}
@@ -387,6 +405,7 @@ func TestIsAudioAttachment(t *testing.T) {
 }
 
 func TestTruncate(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		in    string
@@ -400,6 +419,7 @@ func TestTruncate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := truncate(tt.in, tt.limit); got != tt.want {
 				t.Fatalf("truncate(%q, %d) = %q, want %q", tt.in, tt.limit, got, tt.want)
 			}
@@ -408,6 +428,7 @@ func TestTruncate(t *testing.T) {
 }
 
 func TestDownloadableForMedia(t *testing.T) {
+	t.Parallel()
 	message := &waProto.Message{
 		ImageMessage:    &waProto.ImageMessage{Mimetype: proto.String("image/png")},
 		AudioMessage:    &waProto.AudioMessage{Mimetype: proto.String("audio/ogg")},
@@ -442,6 +463,7 @@ func TestDownloadableForMedia(t *testing.T) {
 // everything else through incomingFromEvent; exercise it end to end through
 // the real event handler with a fake subscriber.
 func TestHandleEventDeliversMappedMessage(t *testing.T) {
+	t.Parallel()
 	tr := &Transport{}
 	var got []types.IncomingMessage
 	tr.Subscribe(func(_ context.Context, msg types.IncomingMessage) {
@@ -478,6 +500,7 @@ func TestHandleEventDeliversMappedMessage(t *testing.T) {
 }
 
 func TestHandleGroupInfoEventFiltersSettingsChurn(t *testing.T) {
+	t.Parallel()
 	tr := &Transport{}
 	var got []types.GroupEvent
 	tr.SubscribeGroupEvents(func(_ context.Context, evt types.GroupEvent) {

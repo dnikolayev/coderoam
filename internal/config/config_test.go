@@ -39,6 +39,7 @@ func TestRuntimeAppNameUsesCoderoamNameByDefault(t *testing.T) {
 }
 
 func TestApplyDefaultsActiveConfig(t *testing.T) {
+	t.Parallel()
 	cfg := Config{}
 	ApplyDefaults(&cfg)
 	if cfg.Active.FallbackDelaySeconds != 2 {
@@ -53,6 +54,7 @@ func TestApplyDefaultsActiveConfig(t *testing.T) {
 }
 
 func TestApplyDefaultsNormalizesActiveConfig(t *testing.T) {
+	t.Parallel()
 	cfg := Default()
 	cfg.Active.FallbackDelaySeconds = -1
 	cfg.Active.FallbackBatchLimit = 0
@@ -70,6 +72,7 @@ func TestApplyDefaultsNormalizesActiveConfig(t *testing.T) {
 }
 
 func TestApplyDefaultsDisablesUnsupportedSessionEncryption(t *testing.T) {
+	t.Parallel()
 	cfg := Default()
 	cfg.Security.StoreSessionsEncrypted = true
 	ApplyDefaults(&cfg)
@@ -79,6 +82,7 @@ func TestApplyDefaultsDisablesUnsupportedSessionEncryption(t *testing.T) {
 }
 
 func TestValidateRunnerAllowsProcessJSONL(t *testing.T) {
+	t.Parallel()
 	err := ValidateRunner("default", RunnerConfig{
 		Mode:    "process-jsonl",
 		Command: "/usr/bin/true",

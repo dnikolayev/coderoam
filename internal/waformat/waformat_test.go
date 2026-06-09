@@ -3,6 +3,7 @@ package waformat
 import "testing"
 
 func TestReply(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   string
@@ -33,6 +34,7 @@ func TestReply(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if got := Reply(tc.in); got != tc.want {
 				t.Fatalf("Reply(%q) = %q, want %q", tc.in, got, tc.want)
 			}
@@ -41,6 +43,7 @@ func TestReply(t *testing.T) {
 }
 
 func TestReplyPreservesCodeBlocks(t *testing.T) {
+	t.Parallel()
 	in := "Here:\n```go\nx := **notbold**\n```\ndone"
 	want := "Here:\n```\nx := **notbold**\n```\ndone"
 	if got := Reply(in); got != want {
@@ -49,6 +52,7 @@ func TestReplyPreservesCodeBlocks(t *testing.T) {
 }
 
 func TestReplyPreservesInlineCode(t *testing.T) {
+	t.Parallel()
 	in := "run `make **all**` now"
 	want := "run `make **all**` now"
 	if got := Reply(in); got != want {
@@ -57,6 +61,7 @@ func TestReplyPreservesInlineCode(t *testing.T) {
 }
 
 func TestReplyKeepsFenceWithoutLanguage(t *testing.T) {
+	t.Parallel()
 	in := "```\nplain\n```"
 	if got := Reply(in); got != in {
 		t.Fatalf("Reply(%q) = %q, want unchanged", in, got)
@@ -64,6 +69,7 @@ func TestReplyKeepsFenceWithoutLanguage(t *testing.T) {
 }
 
 func TestReplyIdempotent(t *testing.T) {
+	t.Parallel()
 	in := "# Heading\n\n- a **bold** point\n- see [docs](https://x.io)\n\n```py\ncode\n```"
 	once := Reply(in)
 	twice := Reply(once)

@@ -8,6 +8,7 @@ import (
 )
 
 func TestActiveDefaultParticipants(t *testing.T) {
+	t.Parallel()
 	var cfg config.Config
 	cfg.Security.AdminSenderIDs = []string{"owner@lid", "15550001111@s.whatsapp.net", "15550001111@s.whatsapp.net"}
 	cfg.Security.AllowedSenderIDs = []string{"owner@lid", "friend@lid", "1203630@g.us", "+15550002222", ""}

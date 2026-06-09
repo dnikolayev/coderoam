@@ -121,6 +121,7 @@ func TestBuildPromptIncludesLocalImageAttachment(t *testing.T) {
 }
 
 func TestBuildPromptExplainsMissingImageDownload(t *testing.T) {
+	t.Parallel()
 	got := buildPrompt(request{
 		SenderID: "sender@s.whatsapp.net",
 		ChatID:   "group@g.us",
@@ -141,6 +142,7 @@ func TestBuildPromptExplainsMissingImageDownload(t *testing.T) {
 }
 
 func TestBuildPromptExplainsMissingAudioDownload(t *testing.T) {
+	t.Parallel()
 	got := buildPrompt(request{
 		SenderID: "sender@s.whatsapp.net",
 		ChatID:   "group@g.us",

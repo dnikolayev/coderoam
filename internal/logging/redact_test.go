@@ -6,6 +6,7 @@ import (
 )
 
 func TestRedactPhoneAndJID(t *testing.T) {
+	t.Parallel()
 	got := Redact("sender=380506171414@s.whatsapp.net phone=+380506171414")
 	if strings.Contains(got, "506171") {
 		t.Fatalf("redaction leaked middle digits: %q", got)

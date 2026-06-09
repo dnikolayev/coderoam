@@ -13,6 +13,7 @@ import (
 )
 
 func TestAcquireRunLockFreshAndRelease(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "run.lock")
 	release, err := acquireRunLockAt(path, false)
 	if err != nil {
@@ -35,6 +36,7 @@ func TestAcquireRunLockFreshAndRelease(t *testing.T) {
 }
 
 func TestAcquireRunLockRefusesLiveHolder(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "run.lock")
 	// Simulate another live daemon: a distinct owner identity holding the OS
 	// lock through a separate file handle in this process.
@@ -88,6 +90,7 @@ func TestAcquireRunLockTakeoverDoesNotClearLiveHolderThatSurvives(t *testing.T) 
 }
 
 func TestAcquireRunLockClearsStaleLock(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "run.lock")
 	// A crashed daemon leaves content but no OS lock: that is a stale lock.
 	if err := os.WriteFile(path, []byte("2147483600\n"), 0o600); err != nil {
@@ -104,6 +107,7 @@ func TestAcquireRunLockClearsStaleLock(t *testing.T) {
 }
 
 func TestAcquireRunLockContentionSingleWinner(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "run.lock")
 	const contenders = 16
 	type result struct {
@@ -156,6 +160,7 @@ func TestAcquireRunLockContentionSingleWinner(t *testing.T) {
 }
 
 func TestAcquireRunLockStaleRecoveryRaceSingleWinner(t *testing.T) {
+	t.Parallel()
 	for round := 0; round < 10; round++ {
 		path := filepath.Join(t.TempDir(), "run.lock")
 		// A dead owner's leftover lock that both contenders judge stale.
@@ -223,6 +228,7 @@ func TestAcquireRunLockStaleRecoveryRaceSingleWinner(t *testing.T) {
 }
 
 func TestAcquireRunLockReleaseIsIdempotent(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "run.lock")
 	release, err := acquireRunLockAt(path, false)
 	if err != nil {
@@ -245,6 +251,7 @@ func TestAcquireRunLockReleaseIsIdempotent(t *testing.T) {
 }
 
 func TestProcessAlive(t *testing.T) {
+	t.Parallel()
 	if !processAlive(os.Getpid()) {
 		t.Fatal("current process should be alive")
 	}

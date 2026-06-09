@@ -14,6 +14,7 @@ import (
 )
 
 func TestSessionDSNPragmas(t *testing.T) {
+	t.Parallel()
 	got := sessionDSN("/home/u/.coderoam/wa.db")
 	want := "file:/home/u/.coderoam/wa.db?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=synchronous(normal)"
 	if got != want {
@@ -22,6 +23,7 @@ func TestSessionDSNPragmas(t *testing.T) {
 }
 
 func TestClassifyQREvent(t *testing.T) {
+	t.Parallel()
 	pairErr := errors.New("pairing exploded")
 	tests := []struct {
 		name    string
@@ -39,6 +41,7 @@ func TestClassifyQREvent(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := classifyQREvent(tt.item)
 			if got != tt.want {
 				t.Fatalf("action = %d, want %d", got, tt.want)
@@ -57,6 +60,7 @@ func TestClassifyQREvent(t *testing.T) {
 }
 
 func TestQRImageTarget(t *testing.T) {
+	t.Parallel()
 	if got := qrImageTarget("/tmp/custom.png", "/data/wa.db"); got != "/tmp/custom.png" {
 		t.Fatalf("explicit path = %q", got)
 	}
@@ -66,6 +70,7 @@ func TestQRImageTarget(t *testing.T) {
 }
 
 func TestShouldDeliver(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		text  string
@@ -80,6 +85,7 @@ func TestShouldDeliver(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := shouldDeliver(tt.text, tt.media); got != tt.want {
 				t.Fatalf("shouldDeliver(%q, %d media) = %t, want %t", tt.text, len(tt.media), got, tt.want)
 			}
@@ -88,6 +94,7 @@ func TestShouldDeliver(t *testing.T) {
 }
 
 func TestIncomingFromEventGroupMessage(t *testing.T) {
+	t.Parallel()
 	ts := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	media := []types.MediaAttachment{{Type: "voice", Transcript: "ship it"}}
 	evt := &events.Message{
@@ -134,6 +141,7 @@ func TestIncomingFromEventGroupMessage(t *testing.T) {
 }
 
 func TestIncomingFromEventDirectMessageFromMe(t *testing.T) {
+	t.Parallel()
 	evt := &events.Message{
 		Info: waTypes.MessageInfo{
 			MessageSource: waTypes.MessageSource{
@@ -155,6 +163,7 @@ func TestIncomingFromEventDirectMessageFromMe(t *testing.T) {
 }
 
 func TestGroupEventFromInfo(t *testing.T) {
+	t.Parallel()
 	gjid := waTypes.NewJID("120363000000000001", waTypes.GroupServer)
 	sender := waTypes.NewJID("15551234567", waTypes.DefaultUserServer)
 	ts := time.Date(2026, 6, 10, 9, 30, 0, 0, time.UTC)
@@ -200,6 +209,7 @@ func TestGroupEventFromInfo(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got, ok := groupEventFromInfo(tt.evt)
 			if ok != tt.wantOK {
 				t.Fatalf("ok = %t, want %t", ok, tt.wantOK)
@@ -233,6 +243,7 @@ func TestGroupEventFromInfo(t *testing.T) {
 }
 
 func TestReadReceiptTarget(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		msg        types.IncomingMessage
@@ -269,6 +280,7 @@ func TestReadReceiptTarget(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			chat, sender, err := readReceiptTarget(tt.msg)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
@@ -296,6 +308,7 @@ func TestReadReceiptTarget(t *testing.T) {
 }
 
 func TestValidateGroupCreation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		groupName    string
@@ -335,6 +348,7 @@ func TestValidateGroupCreation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			jids, err := validateGroupCreation(tt.groupName, tt.participants)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
@@ -357,6 +371,7 @@ func TestValidateGroupCreation(t *testing.T) {
 }
 
 func TestGroupJID(t *testing.T) {
+	t.Parallel()
 	jid, err := groupJID("120363000000000001@g.us")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -376,6 +391,7 @@ func TestGroupJID(t *testing.T) {
 }
 
 func TestChatsFromGroupsSkipsNilEntries(t *testing.T) {
+	t.Parallel()
 	group := &waTypes.GroupInfo{JID: waTypes.NewJID("120363000000000001", waTypes.GroupServer)}
 	group.Name = "ops bridge"
 	group.ParticipantCount = 4
@@ -395,6 +411,7 @@ func TestChatsFromGroupsSkipsNilEntries(t *testing.T) {
 }
 
 func TestParseChatID(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		in      string
@@ -408,6 +425,7 @@ func TestParseChatID(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			jid, err := ParseChatID(tt.in)
 			if tt.wantErr {
 				if err == nil {
@@ -426,6 +444,7 @@ func TestParseChatID(t *testing.T) {
 }
 
 func TestNormalizePhone(t *testing.T) {
+	t.Parallel()
 	if got := normalizePhone(" +1 (555) 123-45.67 "); got != "15551234567" {
 		t.Fatalf("normalizePhone = %q", got)
 	}

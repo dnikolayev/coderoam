@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dnikolayev/coderoam/internal/config"
@@ -18,7 +21,11 @@ import (
 )
 
 type Router struct {
-	cfg                     config.Config
+	// cfg holds the active config snapshot. SetConfig swaps the pointer;
+	// each operation (Handle pass, scheduled fallback firing) loads it once
+	// and threads the same snapshot through every helper so a concurrent
+	// reload cannot be observed mid-message.
+	cfg                     atomic.Pointer[config.Config]
 	store                   *db.Store
 	transport               transport.ChatTransport
 	mu                      sync.Mutex
@@ -46,8 +53,7 @@ const minOutboxEchoTextLength = 80
 
 func New(cfg config.Config, store *db.Store, chatTransport transport.ChatTransport) *Router {
 	config.ApplyDefaults(&cfg)
-	return &Router{
-		cfg:                     cfg,
+	r := &Router{
 		store:                   store,
 		transport:               chatTransport,
 		groupMu:                 map[string]*sync.Mutex{},
@@ -57,11 +63,35 @@ func New(cfg config.Config, store *db.Store, chatTransport transport.ChatTranspo
 		activeFallbackScheduled: map[string]bool{},
 		stopped:                 make(chan struct{}),
 	}
+	r.cfg.Store(snapshotConfig(cfg))
+	return r
+}
+
+// snapshotConfig returns a private copy of cfg whose reference-typed fields
+// no longer share backing storage with the caller. Callers keep their own
+// config value and may update it in place after handing it to the router
+// (the daemon rewrites cfg.Groups entries when relay groups are archived),
+// so the router must own an immutable snapshot that lock-free readers can
+// rely on.
+func snapshotConfig(cfg config.Config) *config.Config {
+	cfg.Groups = slices.Clone(cfg.Groups)
+	cfg.Security.AdminSenderIDs = slices.Clone(cfg.Security.AdminSenderIDs)
+	cfg.Security.AllowedSenderIDs = slices.Clone(cfg.Security.AllowedSenderIDs)
+	if cfg.Runner != nil {
+		runners := make(map[string]config.RunnerConfig, len(cfg.Runner))
+		for id, runnerCfg := range cfg.Runner {
+			runnerCfg.Args = slices.Clone(runnerCfg.Args)
+			runnerCfg.Env = maps.Clone(runnerCfg.Env)
+			runners[id] = runnerCfg
+		}
+		cfg.Runner = runners
+	}
+	return &cfg
 }
 
 func (r *Router) SetConfig(cfg config.Config) {
+	r.cfg.Store(snapshotConfig(cfg))
 	r.mu.Lock()
-	r.cfg = cfg
 	cached := r.runnerCache
 	r.runnerCache = map[string]runner.Runner{}
 	r.mu.Unlock()
@@ -100,59 +130,66 @@ func (r *Router) Handle(ctx context.Context, msg types.IncomingMessage) ProcessR
 	lock := r.lockForGroup(msg.ChatID)
 	lock.Lock()
 	defer lock.Unlock()
-	result, err := r.process(ctx, msg)
+	cfg := r.cfg.Load()
+	if cfg == nil {
+		return ProcessResult{Ignored: true, Reason: "router config is not initialized"}
+	}
+	result, err := r.process(ctx, cfg, msg)
 	if err != nil {
 		result = ProcessResult{Ignored: true, Reason: err.Error()}
 	}
 	result = normalizeProcessResult(result)
-	r.auditRoute(ctx, msg, config.GroupConfig{}, result, nil)
+	r.auditRoute(ctx, cfg, msg, config.GroupConfig{}, result, nil)
 	return result
 }
 
-func (r *Router) process(ctx context.Context, msg types.IncomingMessage) (ProcessResult, error) {
+func (r *Router) process(ctx context.Context, cfg *config.Config, msg types.IncomingMessage) (ProcessResult, error) {
+	if cfg == nil {
+		return ProcessResult{}, fmt.Errorf("router config is not initialized")
+	}
 	if msg.ID == "" {
 		msg.ID = fmt.Sprintf("%s:%s:%d", msg.ChatID, msg.SenderID, msg.Timestamp.UnixNano())
 	}
 	if msg.Timestamp.IsZero() {
 		msg.Timestamp = time.Now()
 	}
-	if msg.IsFromMe && !r.cfg.Trigger.AllowOwn {
+	if msg.IsFromMe && !cfg.Trigger.AllowOwn {
 		return ProcessResult{Ignored: true, Reason: "own message ignored"}, nil
 	}
 	if _, err := r.killSwitchClear(); err != nil {
 		return ProcessResult{Ignored: true, Reason: err.Error()}, nil
 	}
 
-	group, allowed := config.FindGroup(r.cfg, msg.ChatID)
-	if r.cfg.Security.RequireGroupAllowlist && !allowed {
+	group, allowed := config.FindGroup(*cfg, msg.ChatID)
+	if cfg.Security.RequireGroupAllowlist && !allowed {
 		return ProcessResult{Ignored: true, Reason: "chat is not allowlisted"}, nil
 	}
 	if !allowed {
 		group = config.GroupConfig{ID: msg.ChatID, Runner: "default", Enabled: true}
 	}
-	senderAuthorized := r.senderAllowed(msg.SenderID)
-	activeSessionSenderVerification := r.cfg.Security.RequireSenderAllowlist && !senderAuthorized && group.Mode == config.GroupModeActiveSession
-	if r.cfg.Security.RequireSenderAllowlist && !senderAuthorized && !activeSessionSenderVerification {
+	senderAuthorized := senderAllowed(cfg, msg.SenderID)
+	activeSessionSenderVerification := cfg.Security.RequireSenderAllowlist && !senderAuthorized && group.Mode == config.GroupModeActiveSession
+	if cfg.Security.RequireSenderAllowlist && !senderAuthorized && !activeSessionSenderVerification {
 		return ProcessResult{Ignored: true, Reason: "sender is not allowlisted"}, nil
 	}
 
-	if err := r.store.EnsureProfile(ctx, r.cfg.App.Profile); err != nil {
+	if err := r.store.EnsureProfile(ctx, cfg.App.Profile); err != nil {
 		return ProcessResult{}, err
 	}
-	_ = r.store.ExpirePendingInteractions(ctx, r.cfg.App.Profile)
-	_ = r.store.UpsertChat(ctx, r.cfg.App.Profile, types.Chat{
+	_ = r.store.ExpirePendingInteractions(ctx, cfg.App.Profile)
+	_ = r.store.UpsertChat(ctx, cfg.App.Profile, types.Chat{
 		ID:          msg.ChatID,
 		Type:        msg.ChatType,
 		DisplayName: msg.ChatName,
 		Alias:       group.Alias,
 		Allowed:     true,
 	})
-	_ = r.store.UpsertSender(ctx, r.cfg.App.Profile, msg.SenderID, msg.SenderName, false)
-	if r.isRecentOutboxEcho(ctx, msg) {
+	_ = r.store.UpsertSender(ctx, cfg.App.Profile, msg.SenderID, msg.SenderName, false)
+	if r.isRecentOutboxEcho(ctx, cfg, msg) {
 		return ProcessResult{Ignored: true, Reason: "recent outbox echo ignored"}, nil
 	}
 	interactionTrigger := ""
-	if pending, ok, err := r.store.FindPendingInteraction(ctx, r.cfg.App.Profile, msg.ChatID, msg.SenderID); err != nil {
+	if pending, ok, err := r.store.FindPendingInteraction(ctx, cfg.App.Profile, msg.ChatID, msg.SenderID); err != nil {
 		return ProcessResult{}, err
 	} else if ok {
 		replyText, mediaDerived := interactionReplyText(msg)
@@ -162,13 +199,13 @@ func (r *Router) process(ctx context.Context, msg types.IncomingMessage) (Proces
 			if len(ambiguous) > 0 {
 				reply = ambiguousInteractionReply(pending, ambiguous)
 			}
-			if sendErr := r.sendText(ctx, msg, 0, reply); sendErr != nil {
+			if sendErr := r.sendText(ctx, cfg, msg, 0, reply); sendErr != nil {
 				return ProcessResult{}, sendErr
 			}
 			r.markRead(ctx, msg)
 			return ProcessResult{Reason: "pending interaction invalid choice", Sent: []string{reply}}, nil
 		}
-		if err := r.store.MarkPendingInteractionAnswered(ctx, r.cfg.App.Profile, pending.ID, selectedIndex, selectedText); err != nil {
+		if err := r.store.MarkPendingInteractionAnswered(ctx, cfg.App.Profile, pending.ID, selectedIndex, selectedText); err != nil {
 			return ProcessResult{}, err
 		}
 		if mediaDerived {
@@ -182,7 +219,7 @@ func (r *Router) process(ctx context.Context, msg types.IncomingMessage) (Proces
 
 	if group.Mode == config.GroupModeActiveSession {
 		sessionID := config.ActiveSessionID(group)
-		record, fresh, err := r.store.StoreActiveInboxMessage(ctx, r.cfg.App.Profile, group.Alias, sessionID, msg)
+		record, fresh, err := r.store.StoreActiveInboxMessage(ctx, cfg.App.Profile, group.Alias, sessionID, msg)
 		if err != nil {
 			return ProcessResult{}, err
 		}
@@ -190,40 +227,40 @@ func (r *Router) process(ctx context.Context, msg types.IncomingMessage) (Proces
 			return ProcessResult{Ignored: true, Reason: "duplicate active inbox message ignored"}, nil
 		}
 		if activeSessionSenderVerification {
-			if r.shouldSendActiveAck("queued") {
+			if shouldSendActiveAck(cfg, "queued") {
 				ack := fmt.Sprintf("Received #%d. Waiting for local approval before this sender can control the session.", record.ID)
-				if _, err := r.store.QueueActiveOutbox(ctx, r.cfg.App.Profile, msg.ChatID, ack, false); err != nil {
+				if _, err := r.store.QueueActiveOutbox(ctx, cfg.App.Profile, msg.ChatID, ack, false); err != nil {
 					return ProcessResult{}, err
 				}
 			}
 			return ProcessResult{Reason: "active inbox queued for sender verification"}, nil
 		}
-		if _, connected, err := r.store.ActiveWatcherFresh(ctx, r.cfg.App.Profile, sessionID, activeWatcherStaleAfter); err != nil {
+		if _, connected, err := r.store.ActiveWatcherFresh(ctx, cfg.App.Profile, sessionID, activeWatcherStaleAfter); err != nil {
 			return ProcessResult{}, err
-		} else if !connected && r.activeSessionFallbackAllowed(group.Runner) {
+		} else if !connected && activeSessionFallbackAllowed(cfg, group.Runner) {
 			if r.activeFallbackDelay <= 0 {
-				return r.processActiveSessionFallback(ctx, msg, group, sessionID)
+				return r.processActiveSessionFallback(ctx, cfg, msg, group, sessionID)
 			}
-			scheduled := r.scheduleActiveSessionFallback(msg, group, sessionID)
-			if scheduled && r.shouldSendActiveAck("fallback") {
-				ack := r.activeAckText("fallback", record.ID, sessionID, group.Runner)
-				if _, err := r.store.QueueActiveOutbox(ctx, r.cfg.App.Profile, msg.ChatID, ack, false); err != nil {
+			scheduled := r.scheduleActiveSessionFallback(cfg, msg, group, sessionID)
+			if scheduled && shouldSendActiveAck(cfg, "fallback") {
+				ack := activeAckText(cfg, "fallback", record.ID, sessionID, group.Runner)
+				if _, err := r.store.QueueActiveOutbox(ctx, cfg.App.Profile, msg.ChatID, ack, false); err != nil {
 					return ProcessResult{}, err
 				}
 			}
 			return ProcessResult{Reason: "active inbox fallback scheduled"}, nil
 		} else if connected {
-			if r.shouldSendActiveAck("live") {
-				ack := r.activeAckText("live", record.ID, sessionID, group.Runner)
-				if _, err := r.store.QueueActiveOutbox(ctx, r.cfg.App.Profile, msg.ChatID, ack, false); err != nil {
+			if shouldSendActiveAck(cfg, "live") {
+				ack := activeAckText(cfg, "live", record.ID, sessionID, group.Runner)
+				if _, err := r.store.QueueActiveOutbox(ctx, cfg.App.Profile, msg.ChatID, ack, false); err != nil {
 					return ProcessResult{}, err
 				}
 			}
 			return ProcessResult{Reason: "active inbox queued"}, nil
 		}
-		if r.shouldSendActiveAck("queued") {
-			ack := r.activeAckText("queued", record.ID, sessionID, group.Runner)
-			if _, err := r.store.QueueActiveOutbox(ctx, r.cfg.App.Profile, msg.ChatID, ack, false); err != nil {
+		if shouldSendActiveAck(cfg, "queued") {
+			ack := activeAckText(cfg, "queued", record.ID, sessionID, group.Runner)
+			if _, err := r.store.QueueActiveOutbox(ctx, cfg.App.Profile, msg.ChatID, ack, false); err != nil {
 				return ProcessResult{}, err
 			}
 		}
@@ -234,13 +271,13 @@ func (r *Router) process(ctx context.Context, msg types.IncomingMessage) (Proces
 	trigger := interactionTrigger
 	if interactionTrigger == "" {
 		var ok bool
-		text, trigger, ok = r.applyTrigger(msg)
+		text, trigger, ok = applyTrigger(cfg, msg)
 		if !ok {
 			return ProcessResult{Ignored: true, Reason: "trigger not matched"}, nil
 		}
 	}
 
-	record, fresh, err := r.store.RecordIncomingMessage(ctx, r.cfg.App.Profile, msg, r.cfg.Retention.StoreMessageText)
+	record, fresh, err := r.store.RecordIncomingMessage(ctx, cfg.App.Profile, msg, cfg.Retention.StoreMessageText)
 	if err != nil {
 		return ProcessResult{}, err
 	}
@@ -262,7 +299,7 @@ func (r *Router) process(ctx context.Context, msg types.IncomingMessage) (Proces
 	if runnerID == "" {
 		runnerID = "default"
 	}
-	result, messageStatus, err := r.invokeRunnerAndSend(ctx, msg, group, runnerID, record.ID, text, trigger)
+	result, messageStatus, err := r.invokeRunnerAndSend(ctx, cfg, msg, group, runnerID, record.ID, text, trigger)
 	if err != nil {
 		_ = r.store.MarkMessageProcessed(ctx, record.ID, messageStatus)
 		return ProcessResult{}, err
@@ -278,8 +315,8 @@ func (r *Router) markRead(ctx context.Context, msg types.IncomingMessage) {
 	_ = r.transport.MarkRead(ctx, msg)
 }
 
-func (r *Router) invokeRunnerAndSend(ctx context.Context, msg types.IncomingMessage, group config.GroupConfig, runnerID string, messageID int64, text, trigger string) (ProcessResult, string, error) {
-	runnerCfg, ok := r.cfg.Runner[runnerID]
+func (r *Router) invokeRunnerAndSend(ctx context.Context, cfg *config.Config, msg types.IncomingMessage, group config.GroupConfig, runnerID string, messageID int64, text, trigger string) (ProcessResult, string, error) {
+	runnerCfg, ok := cfg.Runner[runnerID]
 	if !ok {
 		return ProcessResult{}, "runner_missing", fmt.Errorf("runner %q is not configured", runnerID)
 	}
@@ -287,9 +324,9 @@ func (r *Router) invokeRunnerAndSend(ctx context.Context, msg types.IncomingMess
 		return ProcessResult{}, "runner_invalid", err
 	}
 
-	req := r.buildRequest(msg, group, runnerID, text, trigger)
+	req := buildRequest(cfg, msg, group, runnerID, text, trigger)
 	requestJSON, _ := json.Marshal(req)
-	processRunner := r.runnerFor(msg.ChatID, runnerID, runnerCfg)
+	processRunner := r.runnerFor(cfg, msg.ChatID, runnerID, runnerCfg)
 	runResult, runErr := processRunner.Invoke(ctx, req)
 	responseJSON, _ := json.Marshal(runResult.Response)
 	invocationStatus := "ok"
@@ -299,7 +336,7 @@ func (r *Router) invokeRunnerAndSend(ctx context.Context, msg types.IncomingMess
 		messageStatus = "runner_error"
 	}
 	_ = r.store.RecordInvocation(ctx, db.InvocationRecord{
-		ProfileID:    r.cfg.App.Profile,
+		ProfileID:    cfg.App.Profile,
 		ChatID:       msg.ChatID,
 		RunnerID:     runnerID,
 		MessageID:    messageID,
@@ -321,11 +358,11 @@ func (r *Router) invokeRunnerAndSend(ctx context.Context, msg types.IncomingMess
 			if promptText == "" {
 				continue
 			}
-			if sendErr := r.sendText(ctx, msg, messageID, promptText); sendErr != nil {
+			if sendErr := r.sendText(ctx, cfg, msg, messageID, promptText); sendErr != nil {
 				return ProcessResult{Ignored: false, Reason: sendErr.Error(), Sent: sent}, "send_failed", nil
 			}
 			if _, err := r.store.CreatePendingInteraction(ctx, db.PendingInteractionRecord{
-				ProfileID:       r.cfg.App.Profile,
+				ProfileID:       cfg.App.Profile,
 				ChatID:          msg.ChatID,
 				SenderID:        msg.SenderID,
 				RunnerID:        runnerID,
@@ -342,15 +379,15 @@ func (r *Router) invokeRunnerAndSend(ctx context.Context, msg types.IncomingMess
 		if action.Type != "reply" && action.Type != "error" {
 			continue
 		}
-		for _, chunk := range chunkText(waformat.Reply(action.Text), r.cfg.RateLimits.MaxResponseChars, r.cfg.Reply.MaxChunks, r.cfg.Reply.ChunkSeparator) {
-			if sendErr := r.sendText(ctx, msg, messageID, chunk); sendErr != nil {
+		for _, chunk := range chunkText(waformat.Reply(action.Text), cfg.RateLimits.MaxResponseChars, cfg.Reply.MaxChunks, cfg.Reply.ChunkSeparator) {
+			if sendErr := r.sendText(ctx, cfg, msg, messageID, chunk); sendErr != nil {
 				return ProcessResult{Ignored: false, Reason: sendErr.Error(), Sent: sent}, "send_failed", nil
 			}
 			sent = append(sent, chunk)
 		}
 		if options, ok := detectReplyInteraction(action.Text); ok {
 			if _, err := r.store.CreatePendingInteraction(ctx, db.PendingInteractionRecord{
-				ProfileID:       r.cfg.App.Profile,
+				ProfileID:       cfg.App.Profile,
 				ChatID:          msg.ChatID,
 				SenderID:        msg.SenderID,
 				RunnerID:        runnerID,
@@ -366,12 +403,12 @@ func (r *Router) invokeRunnerAndSend(ctx context.Context, msg types.IncomingMess
 	return normalizeProcessResult(ProcessResult{Sent: sent}), messageStatus, nil
 }
 
-func (r *Router) scheduleActiveSessionFallback(msg types.IncomingMessage, group config.GroupConfig, sessionID string) bool {
+func (r *Router) scheduleActiveSessionFallback(cfg *config.Config, msg types.IncomingMessage, group config.GroupConfig, sessionID string) bool {
 	delay := r.activeFallbackDelay
 	if delay < 0 {
 		delay = 0
 	}
-	key := activeFallbackScheduleKey(r.cfg.App.Profile, msg.ChatID, sessionID)
+	key := activeFallbackScheduleKey(cfg.App.Profile, msg.ChatID, sessionID)
 	r.mu.Lock()
 	if r.activeFallbackScheduled == nil {
 		r.activeFallbackScheduled = map[string]bool{}
@@ -426,13 +463,19 @@ func (r *Router) scheduleActiveSessionFallback(msg types.IncomingMessage, group 
 				case <-ctx.Done():
 				}
 			}()
-			result, err := r.processActiveSessionFallback(ctx, msg, group, sessionID)
+			// Load a fresh snapshot per firing: config may have been
+			// reloaded while this goroutine waited on its timer.
+			fireCfg := r.cfg.Load()
+			if fireCfg == nil {
+				return
+			}
+			result, err := r.processActiveSessionFallback(ctx, fireCfg, msg, group, sessionID)
 			cancel()
 			lock.Unlock()
 			if err != nil {
 				result = ProcessResult{Ignored: true, Reason: err.Error()}
 			}
-			r.auditRoute(context.Background(), msg, group, result, map[string]any{"async_fallback": true})
+			r.auditRoute(context.Background(), fireCfg, msg, group, result, map[string]any{"async_fallback": true})
 			if err != nil || result.Ignored || result.Reason == "active inbox fallback skipped because watcher connected" {
 				return
 			}
@@ -455,13 +498,16 @@ func normalizeProcessResult(result ProcessResult) ProcessResult {
 	return result
 }
 
-func (r *Router) processActiveSessionFallback(ctx context.Context, msg types.IncomingMessage, group config.GroupConfig, sessionID string) (ProcessResult, error) {
-	if _, connected, err := r.store.ActiveWatcherFresh(ctx, r.cfg.App.Profile, sessionID, activeWatcherStaleAfter); err != nil {
+func (r *Router) processActiveSessionFallback(ctx context.Context, cfg *config.Config, msg types.IncomingMessage, group config.GroupConfig, sessionID string) (ProcessResult, error) {
+	if cfg == nil {
+		return ProcessResult{}, fmt.Errorf("router config is not initialized")
+	}
+	if _, connected, err := r.store.ActiveWatcherFresh(ctx, cfg.App.Profile, sessionID, activeWatcherStaleAfter); err != nil {
 		return ProcessResult{}, err
 	} else if connected {
 		return ProcessResult{Reason: "active inbox fallback skipped because watcher connected"}, nil
 	}
-	claimed, err := r.store.ClaimActiveInboxBatchForSession(ctx, r.cfg.App.Profile, msg.ChatID, sessionID, r.activeFallbackLimit)
+	claimed, err := r.store.ClaimActiveInboxBatchForSession(ctx, cfg.App.Profile, msg.ChatID, sessionID, r.activeFallbackLimit)
 	if err != nil {
 		return ProcessResult{}, err
 	}
@@ -469,13 +515,13 @@ func (r *Router) processActiveSessionFallback(ctx context.Context, msg types.Inc
 		return ProcessResult{Ignored: true, Reason: "active inbox fallback found no unread message"}, nil
 	}
 	fallbackMsg, text := incomingFromActiveInboxBatch(claimed, msg)
-	result, _, err := r.invokeRunnerAndSend(ctx, fallbackMsg, group, group.Runner, claimed[0].ID, text, "")
+	result, _, err := r.invokeRunnerAndSend(ctx, cfg, fallbackMsg, group, group.Runner, claimed[0].ID, text, "")
 	status := "done"
 	if err != nil {
 		status = "ignored"
 	}
 	for _, record := range claimed {
-		_ = r.store.MarkActiveInboxDone(ctx, r.cfg.App.Profile, record.ID, status)
+		_ = r.store.MarkActiveInboxDone(ctx, cfg.App.Profile, record.ID, status)
 	}
 	if err != nil {
 		return ProcessResult{}, err
@@ -492,8 +538,8 @@ func activeFallbackScheduleKey(profileID, chatID, sessionID string) string {
 	return strings.Join([]string{profileID, chatID, sessionID}, "\x00")
 }
 
-func (r *Router) activeAckMode() string {
-	mode := strings.ToLower(strings.TrimSpace(r.cfg.Active.AckMode))
+func activeAckMode(cfg *config.Config) string {
+	mode := strings.ToLower(strings.TrimSpace(cfg.Active.AckMode))
 	switch mode {
 	case "off", "verbose":
 		return mode
@@ -502,8 +548,8 @@ func (r *Router) activeAckMode() string {
 	}
 }
 
-func (r *Router) shouldSendActiveAck(kind string) bool {
-	switch r.activeAckMode() {
+func shouldSendActiveAck(cfg *config.Config, kind string) bool {
+	switch activeAckMode(cfg) {
 	case "off":
 		return false
 	case "verbose":
@@ -513,8 +559,8 @@ func (r *Router) shouldSendActiveAck(kind string) bool {
 	}
 }
 
-func (r *Router) activeAckText(kind string, recordID int64, sessionID, runnerID string) string {
-	if r.activeAckMode() == "verbose" {
+func activeAckText(cfg *config.Config, kind string, recordID int64, sessionID, runnerID string) string {
+	if activeAckMode(cfg) == "verbose" {
 		switch kind {
 		case "fallback":
 			return fmt.Sprintf("Received #%d by bridge for session %s. Waiting briefly for related messages, then continuing through runner %s.", recordID, sessionID, runnerID)
@@ -534,34 +580,34 @@ func (r *Router) activeAckText(kind string, recordID int64, sessionID, runnerID 
 	}
 }
 
-func (r *Router) activeSessionFallbackAllowed(runnerID string) bool {
+func activeSessionFallbackAllowed(cfg *config.Config, runnerID string) bool {
 	runnerID = strings.TrimSpace(runnerID)
 	if runnerID == "" {
 		return false
 	}
-	cfg, ok := r.cfg.Runner[runnerID]
+	runnerCfg, ok := cfg.Runner[runnerID]
 	if !ok {
 		return false
 	}
-	if strings.TrimSpace(cfg.Env["CODEX_RUNNER_SESSION_ID"]) != "" {
+	if strings.TrimSpace(runnerCfg.Env["CODEX_RUNNER_SESSION_ID"]) != "" {
 		return false
 	}
-	if strings.TrimSpace(cfg.Env["CODEX_RUNNER_RESUME"]) != "" || activeEnvBool(cfg.Env["CODEX_RUNNER_RESUME_ALL"]) {
+	if strings.TrimSpace(runnerCfg.Env["CODEX_RUNNER_RESUME"]) != "" || activeEnvBool(runnerCfg.Env["CODEX_RUNNER_RESUME_ALL"]) {
 		return false
 	}
-	if strings.TrimSpace(cfg.Env["CLAUDE_RUNNER_SESSION_ID"]) != "" {
+	if strings.TrimSpace(runnerCfg.Env["CLAUDE_RUNNER_SESSION_ID"]) != "" {
 		return false
 	}
-	if strings.TrimSpace(cfg.Env["CLAUDE_RUNNER_RESUME"]) != "" || activeEnvBool(cfg.Env["CLAUDE_RUNNER_RESUME_ALL"]) {
+	if strings.TrimSpace(runnerCfg.Env["CLAUDE_RUNNER_RESUME"]) != "" || activeEnvBool(runnerCfg.Env["CLAUDE_RUNNER_RESUME_ALL"]) {
 		return false
 	}
-	if strings.TrimSpace(cfg.Env["AGENT_RUNNER_SESSION_ID"]) != "" {
+	if strings.TrimSpace(runnerCfg.Env["AGENT_RUNNER_SESSION_ID"]) != "" {
 		return false
 	}
-	if strings.TrimSpace(cfg.Env["AGENT_RUNNER_RESUME"]) != "" || activeEnvBool(cfg.Env["AGENT_RUNNER_RESUME_ALL"]) {
+	if strings.TrimSpace(runnerCfg.Env["AGENT_RUNNER_RESUME"]) != "" || activeEnvBool(runnerCfg.Env["AGENT_RUNNER_RESUME_ALL"]) {
 		return false
 	}
-	return strings.TrimSpace(cfg.Command) != ""
+	return strings.TrimSpace(runnerCfg.Command) != ""
 }
 
 func activeEnvBool(value string) bool {
@@ -573,11 +619,11 @@ func activeEnvBool(value string) bool {
 	}
 }
 
-func (r *Router) runnerFor(chatID, runnerID string, runnerCfg config.RunnerConfig) runner.Runner {
+func (r *Router) runnerFor(cfg *config.Config, chatID, runnerID string, runnerCfg config.RunnerConfig) runner.Runner {
 	if runnerCfg.Mode != "process-jsonl" {
-		return runner.NewProcessRunner(runnerCfg, r.cfg.RateLimits.MaxRunnerSeconds)
+		return runner.NewProcessRunner(runnerCfg, cfg.RateLimits.MaxRunnerSeconds)
 	}
-	key := strings.Join([]string{r.cfg.App.Profile, chatID, runnerID}, "\x00")
+	key := strings.Join([]string{cfg.App.Profile, chatID, runnerID}, "\x00")
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.runnerCache == nil {
@@ -586,7 +632,7 @@ func (r *Router) runnerFor(chatID, runnerID string, runnerCfg config.RunnerConfi
 	if cached, ok := r.runnerCache[key]; ok {
 		return cached
 	}
-	cached := runner.NewProcessRunner(runnerCfg, r.cfg.RateLimits.MaxRunnerSeconds)
+	cached := runner.NewProcessRunner(runnerCfg, cfg.RateLimits.MaxRunnerSeconds)
 	r.runnerCache[key] = cached
 	return cached
 }
@@ -601,38 +647,38 @@ func stopRunners(ctx context.Context, runners map[string]runner.Runner) error {
 	return firstErr
 }
 
-func (r *Router) isRecentOutboxEcho(ctx context.Context, msg types.IncomingMessage) bool {
+func (r *Router) isRecentOutboxEcho(ctx context.Context, cfg *config.Config, msg types.IncomingMessage) bool {
 	text := strings.TrimSpace(msg.Text)
 	if len(text) < minOutboxEchoTextLength {
 		return false
 	}
-	ok, err := r.store.RecentlySentText(ctx, r.cfg.App.Profile, msg.ChatID, text, time.Now().Add(-recentOutboxEchoWindow))
+	ok, err := r.store.RecentlySentText(ctx, cfg.App.Profile, msg.ChatID, text, time.Now().Add(-recentOutboxEchoWindow))
 	return err == nil && ok
 }
 
-func (r *Router) sendText(ctx context.Context, msg types.IncomingMessage, messageID int64, text string) error {
+func (r *Router) sendText(ctx context.Context, cfg *config.Config, msg types.IncomingMessage, messageID int64, text string) error {
 	if r.transport == nil {
 		return nil
 	}
 	_, sendErr := r.transport.SendText(ctx, msg.ChatID, text, types.SendOptions{
-		QuoteOriginal:     r.cfg.Reply.QuoteOriginal,
+		QuoteOriginal:     cfg.Reply.QuoteOriginal,
 		OriginalMessageID: msg.ID,
-		TypingIndicator:   r.cfg.Reply.TypingIndicator,
+		TypingIndicator:   cfg.Reply.TypingIndicator,
 	})
 	if sendErr != nil {
-		_ = r.store.RecordOutboxFailure(ctx, r.cfg.App.Profile, msg.ChatID, messageID, text, sendErr)
+		_ = r.store.RecordOutboxFailure(ctx, cfg.App.Profile, msg.ChatID, messageID, text, sendErr)
 		return sendErr
 	}
-	_ = r.store.RecordOutboxSent(ctx, r.cfg.App.Profile, msg.ChatID, messageID, text)
+	_ = r.store.RecordOutboxSent(ctx, cfg.App.Profile, msg.ChatID, messageID, text)
 	return nil
 }
 
-func (r *Router) auditRoute(ctx context.Context, msg types.IncomingMessage, group config.GroupConfig, result ProcessResult, extra map[string]any) {
-	if r.store == nil || msg.ChatID == "" {
+func (r *Router) auditRoute(ctx context.Context, cfg *config.Config, msg types.IncomingMessage, group config.GroupConfig, result ProcessResult, extra map[string]any) {
+	if r.store == nil || cfg == nil || msg.ChatID == "" {
 		return
 	}
 	if group.ID == "" {
-		if resolved, ok := config.FindGroup(r.cfg, msg.ChatID); ok {
+		if resolved, ok := config.FindGroup(*cfg, msg.ChatID); ok {
 			group = resolved
 		}
 	}
@@ -658,7 +704,7 @@ func (r *Router) auditRoute(ctx context.Context, msg types.IncomingMessage, grou
 	for key, value := range extra {
 		details[key] = value
 	}
-	_ = r.store.Audit(ctx, r.cfg.App.Profile, "route_decision", msg.SenderID, msg.ChatID, details)
+	_ = r.store.Audit(ctx, cfg.App.Profile, "route_decision", msg.SenderID, msg.ChatID, details)
 }
 
 func truncateForAudit(value string, limit int) string {
@@ -721,36 +767,36 @@ func incomingFromActiveInboxBatch(records []db.ActiveInboxRecord, fallback types
 	return msg, combined
 }
 
-func (r *Router) senderAllowed(senderID string) bool {
-	return contains(r.cfg.Security.AllowedSenderIDs, senderID) || contains(r.cfg.Security.AdminSenderIDs, senderID)
+func senderAllowed(cfg *config.Config, senderID string) bool {
+	return contains(cfg.Security.AllowedSenderIDs, senderID) || contains(cfg.Security.AdminSenderIDs, senderID)
 }
 
-func (r *Router) applyTrigger(msg types.IncomingMessage) (text string, trigger string, ok bool) {
+func applyTrigger(cfg *config.Config, msg types.IncomingMessage) (text string, trigger string, ok bool) {
 	raw := strings.TrimSpace(msg.RawText)
 	if raw == "" {
 		raw = strings.TrimSpace(msg.Text)
 	}
-	prefix := strings.TrimSpace(r.cfg.Trigger.Prefix)
-	if r.cfg.Trigger.AlwaysOn {
+	prefix := strings.TrimSpace(cfg.Trigger.Prefix)
+	if cfg.Trigger.AlwaysOn {
 		return strings.TrimSpace(msg.Text), "", true
 	}
 	if prefix != "" && strings.HasPrefix(raw, prefix) {
 		return strings.TrimSpace(strings.TrimPrefix(raw, prefix)), prefix, true
 	}
-	if r.cfg.Trigger.ReplyToBridge && msg.IsReplyToBridge {
+	if cfg.Trigger.ReplyToBridge && msg.IsReplyToBridge {
 		return strings.TrimSpace(msg.Text), "reply", true
 	}
 	return "", "", false
 }
 
-func (r *Router) buildRequest(msg types.IncomingMessage, group config.GroupConfig, runnerID, text, trigger string) runner.Request {
-	sessionID := fmt.Sprintf("%s:%s:%s", r.cfg.App.Profile, msg.ChatID, runnerID)
+func buildRequest(cfg *config.Config, msg types.IncomingMessage, group config.GroupConfig, runnerID, text, trigger string) runner.Request {
+	sessionID := fmt.Sprintf("%s:%s:%s", cfg.App.Profile, msg.ChatID, runnerID)
 	timestamp := msg.Timestamp.UTC().Format(time.RFC3339Nano)
 	return runner.Request{
 		Version:   runner.ProtocolVersion,
 		RequestID: fmt.Sprintf("req_%s", db.TextHash(msg.ID)[:16]),
 		EventType: "message",
-		ProfileID: r.cfg.App.Profile,
+		ProfileID: cfg.App.Profile,
 		Chat: runner.ChatInfo{
 			ID:    msg.ChatID,
 			Type:  string(msg.ChatType),
@@ -769,8 +815,8 @@ func (r *Router) buildRequest(msg types.IncomingMessage, group config.GroupConfi
 		Sender: runner.SenderInfo{
 			ID:          msg.SenderID,
 			DisplayName: msg.SenderName,
-			IsAdmin:     contains(r.cfg.Security.AdminSenderIDs, msg.SenderID),
-			IsAllowed:   r.senderAllowed(msg.SenderID),
+			IsAdmin:     contains(cfg.Security.AdminSenderIDs, msg.SenderID),
+			IsAllowed:   senderAllowed(cfg, msg.SenderID),
 		},
 		Context: runner.RequestContext{
 			SessionID:      sessionID,

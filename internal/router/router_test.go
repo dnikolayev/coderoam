@@ -21,6 +21,7 @@ import (
 )
 
 func TestRouterProcessesAllowedTriggeredMessageAndDedupes(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	dbPath := filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -80,6 +81,7 @@ func TestRouterProcessesAllowedTriggeredMessageAndDedupes(t *testing.T) {
 }
 
 func TestRouterReusesProcessJSONLRunnerPerChatSession(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -129,6 +131,7 @@ func TestRouterReusesProcessJSONLRunnerPerChatSession(t *testing.T) {
 }
 
 func TestRouterIgnoresUnallowedGroup(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	dbPath := filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -159,6 +162,7 @@ func TestRouterIgnoresUnallowedGroup(t *testing.T) {
 }
 
 func TestRouterStoresActiveSessionMessageWithoutRunner(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -230,6 +234,7 @@ func TestRouterStoresActiveSessionMessageWithoutRunner(t *testing.T) {
 }
 
 func TestRouterRoutesParallelActiveSessionsToSeparateInboxes(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -321,6 +326,7 @@ func TestRouterRoutesParallelActiveSessionsToSeparateInboxes(t *testing.T) {
 }
 
 func TestRouterActiveSessionVerboseAckQueuesWithoutRunner(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -360,6 +366,7 @@ func TestRouterActiveSessionVerboseAckQueuesWithoutRunner(t *testing.T) {
 }
 
 func TestRouterIgnoresRecentLongOutboxEcho(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -413,6 +420,7 @@ func TestRouterIgnoresRecentLongOutboxEcho(t *testing.T) {
 }
 
 func TestRouterActiveSessionFallsBackToSafeRunnerWithoutWatcher(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -481,6 +489,7 @@ func TestRouterActiveSessionFallsBackToSafeRunnerWithoutWatcher(t *testing.T) {
 }
 
 func TestRouterActiveSessionFallbackCombinesUnreadBurst(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -538,7 +547,7 @@ func TestRouterActiveSessionFallbackCombinesUnreadBurst(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	result, err := r.processActiveSessionFallback(t.Context(), types.IncomingMessage{ChatID: "1203630active@g.us"}, group, "codex-session")
+	result, err := r.processActiveSessionFallback(t.Context(), r.cfg.Load(), types.IncomingMessage{ChatID: "1203630active@g.us"}, group, "codex-session")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -570,6 +579,7 @@ func TestRouterActiveSessionFallbackCombinesUnreadBurst(t *testing.T) {
 }
 
 func TestRouterActiveSessionScheduledFallbackDrainsLaterUnreadRows(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -650,6 +660,7 @@ func TestRouterActiveSessionScheduledFallbackDrainsLaterUnreadRows(t *testing.T)
 }
 
 func TestRouterStopDrainsScheduledFallbackWithoutProcessing(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -711,6 +722,7 @@ func TestRouterStopDrainsScheduledFallbackWithoutProcessing(t *testing.T) {
 }
 
 func TestRouterActiveSessionFallbackSkipsStaleClaimedRow(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	dbPath := filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -796,6 +808,7 @@ func TestRouterActiveSessionFallbackSkipsStaleClaimedRow(t *testing.T) {
 }
 
 func TestRouterActiveSessionQueuesPinnedSessionRunnerWithoutWatcher(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -857,6 +870,7 @@ func TestRouterActiveSessionQueuesPinnedSessionRunnerWithoutWatcher(t *testing.T
 }
 
 func TestRouterActiveSessionQueuesCodexResumeRunnerWithoutWatcher(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -926,6 +940,7 @@ func TestRouterActiveSessionQueuesCodexResumeRunnerWithoutWatcher(t *testing.T) 
 }
 
 func TestRouterActiveSessionDoesNotFallbackWithFreshWatcher(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -979,6 +994,7 @@ func TestRouterActiveSessionDoesNotFallbackWithFreshWatcher(t *testing.T) {
 }
 
 func TestRouterActiveSessionRoutesPendingChoiceReplyThroughSafeFallback(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -1041,6 +1057,7 @@ func TestRouterActiveSessionRoutesPendingChoiceReplyThroughSafeFallback(t *testi
 }
 
 func TestRouterPendingChoiceFreeFormReplyRoutesToRunner(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -1093,6 +1110,7 @@ func TestRouterPendingChoiceFreeFormReplyRoutesToRunner(t *testing.T) {
 }
 
 func TestResolveInteractionReplyMatchesHumanLanguage(t *testing.T) {
+	t.Parallel()
 	record := db.PendingInteractionRecord{Options: []string{
 		"`LICENSE`, `NOTICE`, `THIRD_PARTY_LICENSES.md`",
 		"`SECURITY.md` with credential/session risks and WhatsApp account-risk warning",
@@ -1131,6 +1149,7 @@ func TestResolveInteractionReplyMatchesHumanLanguage(t *testing.T) {
 }
 
 func TestResolveInteractionReplyKeepsAmbiguousHumanLanguageAsFreeText(t *testing.T) {
+	t.Parallel()
 	record := db.PendingInteractionRecord{Options: []string{
 		"Frontend documentation",
 		"Backend documentation",
@@ -1143,6 +1162,7 @@ func TestResolveInteractionReplyKeepsAmbiguousHumanLanguageAsFreeText(t *testing
 }
 
 func TestResolveInteractionReplyDoesNotTreatMultiNumberTextAsChoice(t *testing.T) {
+	t.Parallel()
 	record := db.PendingInteractionRecord{Options: []string{"Plan", "Implement", "Test"}}
 	text, index, ok, _ := resolveInteractionReplyDetail(record, "1 and 3")
 	if !ok || text != "1 and 3" || index != 0 {
@@ -1151,6 +1171,7 @@ func TestResolveInteractionReplyDoesNotTreatMultiNumberTextAsChoice(t *testing.T
 }
 
 func TestRouterPendingChoiceVoiceTranscriptRoutesToRunner(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -1202,6 +1223,7 @@ func TestRouterPendingChoiceVoiceTranscriptRoutesToRunner(t *testing.T) {
 }
 
 func TestRouterPendingFreeTextAnswerRoutesToRunner(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -1249,6 +1271,7 @@ func TestRouterPendingFreeTextAnswerRoutesToRunner(t *testing.T) {
 }
 
 func TestRouterPendingApprovalUsesDefaultOptions(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -1296,6 +1319,7 @@ func TestRouterPendingApprovalUsesDefaultOptions(t *testing.T) {
 }
 
 func TestRouterExpiredPendingInteractionDoesNotBypassTrigger(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -1342,6 +1366,7 @@ func TestRouterExpiredPendingInteractionDoesNotBypassTrigger(t *testing.T) {
 }
 
 func TestRouterDuplicatePendingReplyDoesNotRunTwice(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -1393,6 +1418,7 @@ func TestRouterDuplicatePendingReplyDoesNotRunTwice(t *testing.T) {
 }
 
 func TestRouterDetectsNumberedQuestionAsPendingInteraction(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -1440,6 +1466,7 @@ func TestRouterDetectsNumberedQuestionAsPendingInteraction(t *testing.T) {
 }
 
 func TestRouterActiveSessionSenderAllowlistAcceptsAdmins(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -1496,6 +1523,66 @@ func TestRouterActiveSessionSenderAllowlistAcceptsAdmins(t *testing.T) {
 	}
 	if len(rows) != 2 || rows[1].SenderID != "other@lid" {
 		t.Fatalf("active inbox after unauthorized sender = %+v", rows)
+	}
+}
+
+func TestRouterSetConfigDoesNotRaceWithHandle(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Runner["default"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
+		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+	}
+	cfg.Groups = []config.GroupConfig{{ID: "1203630test@g.us", Alias: "test", Runner: "default", Enabled: true}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+
+	// Hammer config reloads from another goroutine while messages are being
+	// processed, the way the daemon reloads config after relay group
+	// lifecycle events while Handle is running. Under -race this fails if
+	// any cfg reader does not observe a synchronized snapshot.
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				r.SetConfig(cfg)
+			}
+		}
+	}()
+	const messages = 8
+	for i := 0; i < messages; i++ {
+		result := r.Handle(t.Context(), types.IncomingMessage{
+			ID:        fmt.Sprintf("msg-reload-%d", i),
+			ChatID:    "1203630test@g.us",
+			ChatType:  types.ChatTypeGroup,
+			SenderID:  "sender@s.whatsapp.net",
+			Text:      fmt.Sprintf("reload %d", i),
+			RawText:   fmt.Sprintf("@bridge reload %d", i),
+			Timestamp: time.Now(),
+		})
+		if result.Ignored {
+			t.Fatalf("message %d ignored during reload storm: %s", i, result.Reason)
+		}
+	}
+	close(stop)
+	wg.Wait()
+	if len(ft.Sent) != messages {
+		t.Fatalf("sent count = %d, want %d", len(ft.Sent), messages)
 	}
 }
 

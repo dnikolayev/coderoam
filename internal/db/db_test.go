@@ -9,6 +9,7 @@ import (
 )
 
 func TestRecordIncomingMessageDeduplicates(t *testing.T) {
+	t.Parallel()
 	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -45,6 +46,7 @@ func TestRecordIncomingMessageDeduplicates(t *testing.T) {
 }
 
 func TestMarkMessageProcessingClaimsReceivedOnce(t *testing.T) {
+	t.Parallel()
 	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -79,6 +81,7 @@ func TestMarkMessageProcessingClaimsReceivedOnce(t *testing.T) {
 }
 
 func TestPendingIncomingMessagesReturnsReceivedRows(t *testing.T) {
+	t.Parallel()
 	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -120,6 +123,7 @@ func TestPendingIncomingMessagesReturnsReceivedRows(t *testing.T) {
 }
 
 func TestActiveInboxDedupesClaimsAndMarksDone(t *testing.T) {
+	t.Parallel()
 	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -208,6 +212,7 @@ func TestActiveInboxDedupesClaimsAndMarksDone(t *testing.T) {
 }
 
 func TestActiveInboxRequeueClaimed(t *testing.T) {
+	t.Parallel()
 	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -247,6 +252,7 @@ func TestActiveInboxRequeueClaimed(t *testing.T) {
 }
 
 func TestListClaimedActiveInboxForSession(t *testing.T) {
+	t.Parallel()
 	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -287,6 +293,7 @@ func TestListClaimedActiveInboxForSession(t *testing.T) {
 }
 
 func TestActiveInboxRecoversAbandonedClaims(t *testing.T) {
+	t.Parallel()
 	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -330,6 +337,7 @@ func TestActiveInboxRecoversAbandonedClaims(t *testing.T) {
 }
 
 func TestActiveInboxRecoveryKeepsLiveWatcherClaims(t *testing.T) {
+	t.Parallel()
 	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -378,6 +386,7 @@ func TestActiveInboxRecoveryKeepsLiveWatcherClaims(t *testing.T) {
 }
 
 func TestActiveInboxClaimsOnlyMatchingSession(t *testing.T) {
+	t.Parallel()
 	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -430,6 +439,7 @@ func TestActiveInboxClaimsOnlyMatchingSession(t *testing.T) {
 }
 
 func TestActiveInboxBlankSessionClaimDoesNotClaimNamedSession(t *testing.T) {
+	t.Parallel()
 	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -462,6 +472,7 @@ func TestActiveInboxBlankSessionClaimDoesNotClaimNamedSession(t *testing.T) {
 }
 
 func TestActiveInboxBatchClaimKeepsSameSessionInsideChat(t *testing.T) {
+	t.Parallel()
 	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -527,6 +538,7 @@ func TestActiveInboxBatchClaimKeepsSameSessionInsideChat(t *testing.T) {
 }
 
 func TestActiveWatcherExclusiveLock(t *testing.T) {
+	t.Parallel()
 	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -606,6 +618,7 @@ func TestActiveWatcherExclusiveLock(t *testing.T) {
 }
 
 func TestActiveReadReceiptMarksSent(t *testing.T) {
+	t.Parallel()
 	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -646,6 +659,7 @@ func TestActiveReadReceiptMarksSent(t *testing.T) {
 }
 
 func TestActiveOutboxQueuesAndMarksSent(t *testing.T) {
+	t.Parallel()
 	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -675,6 +689,7 @@ func TestActiveOutboxQueuesAndMarksSent(t *testing.T) {
 }
 
 func TestMigrateMessagesToActiveInbox(t *testing.T) {
+	t.Parallel()
 	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
 	if err != nil {
 		t.Fatal(err)

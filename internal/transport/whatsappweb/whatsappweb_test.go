@@ -22,6 +22,7 @@ func extractForTest(t *testing.T, message *waProto.Message) (string, []types.Med
 }
 
 func TestExtractTextAndMediaIncludesImageCaption(t *testing.T) {
+	t.Parallel()
 	text, media := extractForTest(t, &waProto.Message{
 		ImageMessage: &waProto.ImageMessage{
 			Caption:    proto.String("look at this"),
@@ -43,6 +44,7 @@ func TestExtractTextAndMediaIncludesImageCaption(t *testing.T) {
 }
 
 func TestExtractTextAndMediaAppendsMediaSummaryToCaptionText(t *testing.T) {
+	t.Parallel()
 	text, media := extractForTest(t, &waProto.Message{
 		Conversation: proto.String("@bridge inspect"),
 		ImageMessage: &waProto.ImageMessage{
@@ -62,6 +64,7 @@ func TestExtractTextAndMediaAppendsMediaSummaryToCaptionText(t *testing.T) {
 }
 
 func TestExtractTextAndMediaDetectsVoiceMessage(t *testing.T) {
+	t.Parallel()
 	text, media := extractForTest(t, &waProto.Message{
 		AudioMessage: &waProto.AudioMessage{
 			Mimetype:   proto.String("audio/ogg; codecs=opus"),
@@ -103,6 +106,7 @@ func TestTranscribeAudioAttachmentsAddsTranscript(t *testing.T) {
 }
 
 func TestTranscribeAudioAttachmentsRecordsError(t *testing.T) {
+	t.Parallel()
 	media := transcribeAudioAttachments(context.Background(), []types.MediaAttachment{{
 		Type:      "voice",
 		MIMEType:  "audio/ogg",
@@ -117,6 +121,7 @@ func TestTranscribeAudioAttachmentsRecordsError(t *testing.T) {
 }
 
 func TestFormatMediaSummaryIncludesTranscript(t *testing.T) {
+	t.Parallel()
 	text := formatMediaSummary([]types.MediaAttachment{{
 		Type:       "voice",
 		MIMEType:   "audio/ogg",

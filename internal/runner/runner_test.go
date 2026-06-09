@@ -28,6 +28,7 @@ func stopRunnerCleanup(t *testing.T, r *ProcessRunner) {
 }
 
 func TestProcessOnceJSONRunner(t *testing.T) {
+	t.Parallel()
 	r := NewProcessRunner(config.RunnerConfig{
 		Mode:    "process-once-json",
 		Command: os.Args[0],
@@ -48,6 +49,7 @@ func TestProcessOnceJSONRunner(t *testing.T) {
 }
 
 func TestProcessOnceTextRunner(t *testing.T) {
+	t.Parallel()
 	r := NewProcessRunner(config.RunnerConfig{
 		Mode:    "process-once-text",
 		Command: os.Args[0],
@@ -64,6 +66,7 @@ func TestProcessOnceTextRunner(t *testing.T) {
 }
 
 func TestProcessJSONLRunnerReusesPersistentProcess(t *testing.T) {
+	t.Parallel()
 	r := NewProcessRunner(config.RunnerConfig{
 		Mode:    "process-jsonl",
 		Command: os.Args[0],
@@ -96,6 +99,7 @@ func TestProcessJSONLRunnerReusesPersistentProcess(t *testing.T) {
 }
 
 func TestProcessJSONLRunnerAcceptsReplyEventEnvelope(t *testing.T) {
+	t.Parallel()
 	r := NewProcessRunner(config.RunnerConfig{
 		Mode:    "process-jsonl",
 		Command: os.Args[0],
@@ -117,6 +121,7 @@ func TestProcessJSONLRunnerAcceptsReplyEventEnvelope(t *testing.T) {
 }
 
 func TestProcessJSONLRunnerStopConfirmsExitAndAllowsRestart(t *testing.T) {
+	t.Parallel()
 	r := NewProcessRunner(config.RunnerConfig{
 		Mode:    "process-jsonl",
 		Command: os.Args[0],
@@ -146,6 +151,7 @@ func TestProcessJSONLRunnerStopConfirmsExitAndAllowsRestart(t *testing.T) {
 }
 
 func TestProcessJSONLRunnerConcurrentInvokeAndStop(t *testing.T) {
+	t.Parallel()
 	// Regression test for the Stop vs waiter-goroutine data race: Stop used
 	// to read cmd.ProcessState while the goroutine running cmd.Wait wrote
 	// it. Run with -race to keep that hazard covered.
