@@ -39,7 +39,7 @@ stalkerware, or contacting people without consent.
 
 ## Status
 
-Current implementation: v0.1.5 guided mobile session onboarding.
+Current implementation: v0.1.6 guided mobile session onboarding.
 
 Project maturity: early MVP. The public API, config shape, database schema, and
 runner protocol can still change before v1.0.

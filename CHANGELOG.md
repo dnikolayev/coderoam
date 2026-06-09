@@ -6,6 +6,8 @@ protocols.
 
 ## Unreleased
 
+## v0.1.6 - 2026-06-09
+
 ### Fixed
 
 - Interactive setup agent selection now exits cleanly if stdin closes before a
