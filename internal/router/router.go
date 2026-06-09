@@ -27,6 +27,11 @@ type Router struct {
 	activeFallbackDelay     time.Duration
 	activeFallbackLimit     int
 	activeFallbackScheduled map[string]bool
+	// stopped is closed exactly once by Stop; scheduled fallback goroutines
+	// watch it so shutdown can drain them deterministically.
+	stopped    chan struct{}
+	stopOnce   sync.Once
+	fallbackWG sync.WaitGroup
 }
 
 type ProcessResult struct {
@@ -50,6 +55,7 @@ func New(cfg config.Config, store *db.Store, chatTransport transport.ChatTranspo
 		activeFallbackDelay:     time.Duration(cfg.Active.FallbackDelaySeconds) * time.Second,
 		activeFallbackLimit:     cfg.Active.FallbackBatchLimit,
 		activeFallbackScheduled: map[string]bool{},
+		stopped:                 make(chan struct{}),
 	}
 }
 
@@ -64,12 +70,30 @@ func (r *Router) SetConfig(cfg config.Config) {
 	}
 }
 
+// Stop shuts the router down: it signals scheduled fallback goroutines to
+// exit, stops cached persistent runners, and waits (bounded by ctx) until all
+// background work has drained. After Stop returns with a nil error it is safe
+// to close the underlying store.
 func (r *Router) Stop(ctx context.Context) error {
+	r.stopOnce.Do(func() { close(r.stopped) })
 	r.mu.Lock()
 	cached := r.runnerCache
 	r.runnerCache = map[string]runner.Runner{}
 	r.mu.Unlock()
-	return stopRunners(ctx, cached)
+	err := stopRunners(ctx, cached)
+	drained := make(chan struct{})
+	go func() {
+		r.fallbackWG.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-ctx.Done():
+		if err == nil {
+			err = ctx.Err()
+		}
+	}
+	return err
 }
 
 func (r *Router) Handle(ctx context.Context, msg types.IncomingMessage) ProcessResult {
@@ -356,9 +380,19 @@ func (r *Router) scheduleActiveSessionFallback(msg types.IncomingMessage, group 
 		r.mu.Unlock()
 		return false
 	}
+	select {
+	case <-r.stopped:
+		r.mu.Unlock()
+		return false
+	default:
+	}
 	r.activeFallbackScheduled[key] = true
+	// Add while holding r.mu and after the stopped check so Stop's
+	// fallbackWG.Wait always observes this goroutine.
+	r.fallbackWG.Add(1)
 	r.mu.Unlock()
 	go func() {
+		defer r.fallbackWG.Done()
 		defer func() {
 			r.mu.Lock()
 			delete(r.activeFallbackScheduled, key)
@@ -367,11 +401,31 @@ func (r *Router) scheduleActiveSessionFallback(msg types.IncomingMessage, group 
 		for {
 			if delay > 0 {
 				timer := time.NewTimer(delay)
-				<-timer.C
+				select {
+				case <-timer.C:
+				case <-r.stopped:
+					timer.Stop()
+					return
+				}
+			} else {
+				select {
+				case <-r.stopped:
+					return
+				default:
+				}
 			}
 			lock := r.lockForGroup(msg.ChatID)
 			lock.Lock()
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+			// Abort in-flight fallback work as soon as Stop is signaled so
+			// shutdown is not held hostage by a long runner invocation.
+			go func() {
+				select {
+				case <-r.stopped:
+					cancel()
+				case <-ctx.Done():
+				}
+			}()
 			result, err := r.processActiveSessionFallback(ctx, msg, group, sessionID)
 			cancel()
 			lock.Unlock()

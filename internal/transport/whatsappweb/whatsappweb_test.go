@@ -14,8 +14,15 @@ import (
 	"github.com/dnikolayev/coderoam/internal/types"
 )
 
+// extractForTest runs the real extraction pipeline with downloads and
+// transcription disabled, which never touches the whatsmeow client.
+func extractForTest(t *testing.T, message *waProto.Message) (string, []types.MediaAttachment) {
+	t.Helper()
+	return (&Transport{}).extractTextAndMedia(context.Background(), message, "test-message-id")
+}
+
 func TestExtractTextAndMediaIncludesImageCaption(t *testing.T) {
-	text, media := extractTextAndMedia(&waProto.Message{
+	text, media := extractForTest(t, &waProto.Message{
 		ImageMessage: &waProto.ImageMessage{
 			Caption:    proto.String("look at this"),
 			Mimetype:   proto.String("image/jpeg"),
@@ -36,7 +43,7 @@ func TestExtractTextAndMediaIncludesImageCaption(t *testing.T) {
 }
 
 func TestExtractTextAndMediaAppendsMediaSummaryToCaptionText(t *testing.T) {
-	text, media := extractTextAndMedia(&waProto.Message{
+	text, media := extractForTest(t, &waProto.Message{
 		Conversation: proto.String("@bridge inspect"),
 		ImageMessage: &waProto.ImageMessage{
 			Mimetype:   proto.String("image/png"),
@@ -55,7 +62,7 @@ func TestExtractTextAndMediaAppendsMediaSummaryToCaptionText(t *testing.T) {
 }
 
 func TestExtractTextAndMediaDetectsVoiceMessage(t *testing.T) {
-	text, media := extractTextAndMedia(&waProto.Message{
+	text, media := extractForTest(t, &waProto.Message{
 		AudioMessage: &waProto.AudioMessage{
 			Mimetype:   proto.String("audio/ogg; codecs=opus"),
 			FileLength: proto.Uint64(54321),

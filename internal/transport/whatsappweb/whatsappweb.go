@@ -59,13 +59,7 @@ func NewWithOptions(ctx context.Context, sessionPath string, logLevel string, op
 	}
 	dbLog := waLog.Stdout("whatsmeow-db", strings.ToUpper(logLevel), false)
 	clientLog := waLog.Stdout("whatsmeow", strings.ToUpper(logLevel), false)
-	// modernc.org/sqlite (pure Go, the same driver internal/db uses) registers
-	// itself as "sqlite"; whatsmeow's dbutil maps any "sqlite*" dialect to
-	// SQLite. Pragmas must use modernc's _pragma=name(value) form - mattn-style
-	// params like _foreign_keys=on would be silently ignored. whatsmeow refuses
-	// to start without foreign keys, and busy_timeout(5000) preserves the 5s
-	// default the previous CGO driver applied to every connection.
-	container, err := sqlstore.New(ctx, "sqlite", "file:"+sessionPath+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)", dbLog)
+	container, err := sqlstore.New(ctx, "sqlite", sessionDSN(sessionPath), dbLog)
 	if err != nil {
 		return nil, err
 	}
@@ -144,13 +138,12 @@ func (t *Transport) Login(ctx context.Context, method types.LoginMethod) error {
 		}
 		timedOut := false
 		for evt := range qrChan {
-			if evt.Event == "code" {
+			action, evtErr := classifyQREvent(evt)
+			switch action {
+			case qrShowCode:
 				fmt.Println("Scan this QR code with WhatsApp: Settings -> Linked Devices -> Link a Device")
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
-				qrPath := method.QRImagePath
-				if qrPath == "" {
-					qrPath = t.sessionPath + ".qr.png"
-				}
+				qrPath := qrImageTarget(method.QRImagePath, t.sessionPath)
 				if err := qrcode.WriteFile(evt.Code, qrcode.Medium, 512, qrPath); err == nil {
 					fmt.Printf("QR image: %s\n", qrPath)
 					if method.OpenQRImage && !openedViewer {
@@ -162,20 +155,14 @@ func (t *Transport) Login(ctx context.Context, method types.LoginMethod) error {
 				} else {
 					fmt.Printf("QR image write failed: %v\n", err)
 				}
-				continue
-			}
-			switch evt.Event {
-			case "success":
+			case qrSucceeded:
 				fmt.Println("WhatsApp login succeeded.")
 				t.settleAfterPairing(ctx)
 				return nil
-			case "timeout":
+			case qrBatchTimedOut:
 				timedOut = true
-			case "error":
-				if evt.Error != nil {
-					return evt.Error
-				}
-				return fmt.Errorf("QR login failed")
+			case qrFailed:
+				return evtErr
 			default:
 				fmt.Printf("WhatsApp login event: %s\n", evt.Event)
 			}
@@ -248,41 +235,16 @@ func (t *Transport) ListChats(ctx context.Context) ([]types.Chat, error) {
 	if err != nil {
 		return nil, err
 	}
-	chats := make([]types.Chat, 0, len(groups))
-	for _, group := range groups {
-		if group == nil {
-			continue
-		}
-		chats = append(chats, types.Chat{
-			ID:               group.JID.String(),
-			Type:             types.ChatTypeGroup,
-			DisplayName:      group.Name,
-			ParticipantCount: group.ParticipantCount,
-		})
-	}
-	return chats, nil
+	return chatsFromGroups(groups), nil
 }
 
 func (t *Transport) CreateGroup(ctx context.Context, name string, participants []string) (*types.Chat, error) {
 	if err := t.Connect(ctx); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(name) == "" {
-		return nil, fmt.Errorf("group name is required")
-	}
-	if len(name) > 25 {
-		return nil, fmt.Errorf("group name must be 25 characters or fewer")
-	}
-	if len(participants) == 0 {
-		return nil, fmt.Errorf("at least one participant is required")
-	}
-	jids := make([]waTypes.JID, 0, len(participants))
-	for _, participant := range participants {
-		jid, err := ParseChatID(participant)
-		if err != nil {
-			return nil, fmt.Errorf("invalid participant %q: %w", participant, err)
-		}
-		jids = append(jids, jid)
+	jids, err := validateGroupCreation(name, participants)
+	if err != nil {
+		return nil, err
 	}
 	group, err := t.client.CreateGroup(ctx, whatsmeow.ReqCreateGroup{
 		Name:         name,
@@ -292,25 +254,17 @@ func (t *Transport) CreateGroup(ctx context.Context, name string, participants [
 	if err != nil {
 		return nil, err
 	}
-	chat := &types.Chat{
-		ID:               group.JID.String(),
-		Type:             types.ChatTypeGroup,
-		DisplayName:      group.Name,
-		ParticipantCount: group.ParticipantCount,
-	}
-	return chat, nil
+	chat := chatFromGroup(group)
+	return &chat, nil
 }
 
 func (t *Transport) GetGroupInviteLink(ctx context.Context, chatID string, reset bool) (string, error) {
 	if err := t.Connect(ctx); err != nil {
 		return "", err
 	}
-	jid, err := ParseChatID(chatID)
+	jid, err := groupJID(chatID)
 	if err != nil {
 		return "", err
-	}
-	if jid.Server != waTypes.GroupServer {
-		return "", fmt.Errorf("chat %s is not a group JID", chatID)
 	}
 	return t.client.GetGroupInviteLink(ctx, jid, reset)
 }
@@ -355,16 +309,9 @@ func (t *Transport) MarkRead(ctx context.Context, msg types.IncomingMessage) err
 	if err := t.Connect(ctx); err != nil {
 		return err
 	}
-	chat, err := ParseChatID(msg.ChatID)
+	chat, sender, err := readReceiptTarget(msg)
 	if err != nil {
 		return err
-	}
-	sender := waTypes.JID{}
-	if msg.SenderID != "" {
-		sender, err = ParseChatID(msg.SenderID)
-		if err != nil {
-			return err
-		}
 	}
 	return t.client.MarkRead(ctx, []waTypes.MessageID{waTypes.MessageID(msg.ID)}, time.Now(), chat, sender)
 }
@@ -414,7 +361,7 @@ func (t *Transport) handleEvent(evt any) {
 		return
 	}
 	text, media := t.extractTextAndMedia(context.Background(), msgEvt.Message, string(msgEvt.Info.ID))
-	if strings.TrimSpace(text) == "" && len(media) == 0 {
+	if !shouldDeliver(text, media) {
 		return
 	}
 	t.mu.Lock()
@@ -423,23 +370,7 @@ func (t *Transport) handleEvent(evt any) {
 	if handler == nil {
 		return
 	}
-	chatType := types.ChatTypeDirect
-	if msgEvt.Info.IsGroup {
-		chatType = types.ChatTypeGroup
-	}
-	incoming := types.IncomingMessage{
-		ID:         string(msgEvt.Info.ID),
-		ChatID:     msgEvt.Info.Chat.String(),
-		ChatType:   chatType,
-		SenderID:   msgEvt.Info.Sender.String(),
-		SenderName: msgEvt.Info.PushName,
-		Text:       text,
-		RawText:    text,
-		Media:      media,
-		Timestamp:  msgEvt.Info.Timestamp,
-		IsFromMe:   msgEvt.Info.IsFromMe,
-	}
-	handler(context.Background(), incoming)
+	handler(context.Background(), incomingFromEvent(msgEvt, text, media))
 }
 
 func (t *Transport) handleGroupInfoEvent(evt *events.GroupInfo) {
@@ -452,44 +383,16 @@ func (t *Transport) handleGroupInfoEvent(evt *events.GroupInfo) {
 	if handler == nil {
 		return
 	}
-	left := make([]string, 0, len(evt.Leave))
-	for _, jid := range evt.Leave {
-		left = append(left, jid.String())
-	}
-	joined := make([]string, 0, len(evt.Join))
-	for _, jid := range evt.Join {
-		joined = append(joined, jid.String())
-	}
-	if len(left) == 0 && len(joined) == 0 && evt.Delete == nil {
+	groupEvent, ok := groupEventFromInfo(evt)
+	if !ok {
 		return
 	}
-	participantCount := 0
 	if t.client != nil {
 		if info, err := t.client.GetGroupInfo(context.Background(), evt.JID); err == nil && info != nil {
-			participantCount = len(info.Participants)
+			groupEvent.ParticipantCount = len(info.Participants)
 		}
 	}
-	groupEvent := types.GroupEvent{
-		ChatID:               evt.JID.String(),
-		LeftParticipantIDs:   left,
-		JoinedParticipantIDs: joined,
-		ParticipantCount:     participantCount,
-		Deleted:              evt.Delete != nil,
-		Timestamp:            evt.Timestamp,
-	}
-	if evt.Sender != nil {
-		groupEvent.SenderID = evt.Sender.String()
-	}
 	handler(context.Background(), groupEvent)
-}
-
-func extractTextAndMedia(message *waProto.Message) (string, []types.MediaAttachment) {
-	if message == nil {
-		return "", nil
-	}
-	text := extractBaseText(message)
-	media := extractMedia(message)
-	return combineTextAndMedia(text, media), media
 }
 
 func (t *Transport) extractTextAndMedia(ctx context.Context, message *waProto.Message, messageID string) (string, []types.MediaAttachment) {
