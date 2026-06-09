@@ -8,7 +8,7 @@ require (
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/spf13/cobra v1.10.2
 	go.mau.fi/whatsmeow v0.0.0-20260604205742-c6a4b703e48f
-	golang.org/x/sys v0.45.0
+	golang.org/x/sys v0.46.0
 	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.52.0
 )
