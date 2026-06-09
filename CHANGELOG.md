@@ -11,6 +11,8 @@ protocols.
 - The repository tap formula now installs the latest stable release by default,
   and `scripts/install.sh` defaults to stable installs while keeping `--head`
   for contributor builds.
+- The pipe installer now detaches Homebrew commands from script stdin so
+  `coderoam setup` still runs when using `curl ... | sh`.
 
 ## v0.1.4 - 2026-06-09
 

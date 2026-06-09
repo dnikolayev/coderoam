@@ -57,18 +57,18 @@ if ! command -v brew >/dev/null 2>&1; then
   exit 1
 fi
 
-brew tap dnikolayev/coderoam https://github.com/dnikolayev/coderoam.git
+brew tap dnikolayev/coderoam https://github.com/dnikolayev/coderoam.git </dev/null
 
-if command -v brew >/dev/null 2>&1 && brew trust --help >/dev/null 2>&1; then
-  brew trust dnikolayev/coderoam >/dev/null 2>&1 || true
+if command -v brew >/dev/null 2>&1 && brew trust --help >/dev/null 2>&1 </dev/null; then
+  brew trust dnikolayev/coderoam >/dev/null 2>&1 </dev/null || true
 fi
 
 case "$install_mode" in
   stable)
-    brew install dnikolayev/coderoam/coderoam
+    brew install dnikolayev/coderoam/coderoam </dev/null
     ;;
   head)
-    brew install --HEAD dnikolayev/coderoam/coderoam
+    brew install --HEAD dnikolayev/coderoam/coderoam </dev/null
     ;;
   *)
     echo "CODEROAM_INSTALL_MODE must be 'head' or 'stable'" >&2
