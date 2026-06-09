@@ -6,6 +6,22 @@ protocols.
 
 ## Unreleased
 
+## v0.1.10 - 2026-06-09
+
+### Fixed
+
+- Active-session inbox reads now require a resolved session id when multiple
+  mobile agent groups are configured, preventing a Claude, Codex, Gemini, or
+  OpenCode client from accidentally claiming another client's WhatsApp queue.
+- Blank-session database claims now stay limited to legacy blank-session rows
+  instead of matching named active-session rows.
+
+### Tests
+
+- Added regression coverage for parallel active-session queue isolation,
+  router fallback shutdown, JSONL runner stop/restart races, and WhatsApp
+  transport parsing/decision helpers.
+
 ## v0.1.9 - 2026-06-09
 
 ### Changed
