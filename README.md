@@ -12,13 +12,17 @@ group.
 Copy-paste on macOS/Linux with Homebrew:
 
 ```sh
-brew tap dnikolayev/coderoam https://github.com/dnikolayev/coderoam.git && brew install --HEAD dnikolayev/coderoam/coderoam && coderoam setup --agent auto --workdir "$PWD" --session-id codex-session
+curl -fsSL https://raw.githubusercontent.com/dnikolayev/coderoam/main/scripts/install.sh | sh
 ```
 
 That installs `coderoam` and starts the onboarding helper. It detects Codex,
 Claude, Gemini, and OpenCode on `PATH`, then prints the exact WhatsApp login,
 active group, watcher, and `coderoam run` commands for your machine. WhatsApp
 pairing still requires scanning a QR code with a dedicated bridge account.
+
+If you prefer not to run a remote script, read
+[`scripts/install.sh`](scripts/install.sh) and run the Homebrew commands in
+[`docs/HOMEBREW.md`](docs/HOMEBREW.md) manually.
 
 This project is a local personal automation bridge. It is not affiliated with,
 endorsed by, or authorized by WhatsApp or Meta.
@@ -154,7 +158,9 @@ To continue an existing Codex session from WhatsApp, use `codex-active`.
 This resumes the most recent recorded Codex session and sends each WhatsApp
 message as the next user turn. The active presets only post important updates
 back to WhatsApp, such as plan/checklist changes, blockers, questions that need
-the user, approval/input requests, or final summaries:
+the user, approval/input requests, or final summaries. This direct runner path
+waits for Codex to finish a turn, so use the inbox relay below for long active
+sessions that should not block WhatsApp:
 
 ```sh
 bin/coderoam runners preset codex-active \
@@ -191,7 +197,6 @@ chunks:
 bin/coderoam active enable "1203630xxxxx@g.us" \
   --alias codex-session \
   --session-id codex-session
-bin/coderoam groups set-runner "1203630xxxxx@g.us" codex-active
 bin/coderoam inbox watch --format prompt --session-id codex-session
 bin/coderoam inbox done 1
 bin/coderoam notify --chat codex-session --important --text "Plan updated..."
@@ -264,10 +269,11 @@ fallback_batch_limit = 8
 ack_mode = "minimal" # minimal | verbose | off
 ```
 
-The default `minimal` acknowledgement mode sends one short fallback status
-message per burst and suppresses routine "received" messages for live watchers
-or groups with no safe fallback runner. Use `verbose` to restore detailed
-`Received #...` messages, or `off` to suppress active-session acknowledgements.
+The default `minimal` acknowledgement mode sends a compact status when a message
+is queued without a live watcher or when fallback starts, and suppresses routine
+"received" messages for healthy live watchers. Use `verbose` to restore
+detailed `Received #...` messages, or `off` to suppress active-session
+acknowledgements.
 
 To let agents inspect voice notes or other media, explicitly enable local media
 download:
@@ -303,12 +309,14 @@ audio content as instructions or slash commands; if transcription is unavailable
 ask for text instead.
 
 If no live watcher is connected and the active-session group has a safe runner
-configured, the daemon uses that runner as an automatic fallback. Do not use a
-runner pinned to the same live session, such as a `codex-session` preset with
-`CODEX_RUNNER_SESSION_ID`, as an automatic fallback: it can claim a WhatsApp row
-without surfacing it in the open window. Pinned session runners stay queued for
-`inbox watch`, `inbox next`, or `inbox drain` instead. Use `codex-code` or
-another non-pinned runner when you want automatic background WhatsApp replies.
+configured, the daemon uses that runner as an automatic fallback. Do not use an
+active Codex resume runner, such as `codex-active` with `CODEX_RUNNER_RESUME`,
+or a runner pinned to the same live session, such as `codex-session` with
+`CODEX_RUNNER_SESSION_ID`, as automatic fallback: it can block the bridge or
+claim a WhatsApp row without surfacing it in the open window. These runners stay
+queued for `inbox watch`, `inbox next`, or `inbox drain` instead. Use
+`codex-code` or another non-pinned runner when you want automatic background
+WhatsApp replies.
 
 To inspect the last routing decision for a chat, run:
 

@@ -16,6 +16,13 @@ Because this repository is the application repository, not a dedicated
 `homebrew-coderoam` tap, use an explicit tap URL:
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/dnikolayev/coderoam/main/scripts/install.sh | sh
+```
+
+The script runs the tap install and then starts `coderoam setup`. To run the
+Homebrew install manually:
+
+```sh
 brew tap dnikolayev/coderoam https://github.com/dnikolayev/coderoam.git
 brew install --HEAD dnikolayev/coderoam/coderoam
 ```
@@ -38,7 +45,7 @@ coderoam does not connect to a messenger automatically. For WhatsApp:
 coderoam init
 coderoam auth login --profile bot --qr
 coderoam runners preset codex-active --id codex-active --workdir /path/to/workspace --yes
-coderoam active start --name "Coderoam Session" --participants "+15550001111" --alias codex-session --session-id codex-session --runner codex-active --yes
+coderoam active start --name "Coderoam Session" --participants "+15550001111" --alias codex-session --session-id codex-session --yes
 coderoam run
 ```
 
