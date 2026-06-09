@@ -6,6 +6,31 @@ protocols.
 
 ## Unreleased
 
+## v0.1.8 - 2026-06-09
+
+### Added
+
+- CI now runs vet, race tests, golangci-lint, and CGO-free smoke builds for
+  every supported release target.
+- Dependabot and a project Makefile cover routine dependency and local quality
+  workflows.
+
+### Changed
+
+- The WhatsApp session store now uses the pure-Go SQLite driver, matching the
+  app database and enabling portable release builds without per-target C
+  toolchains.
+- README, support, contribution, and per-agent relay docs now emphasize the
+  first-run setup flow, separate active-session IDs per client, and generated
+  runbook markers.
+
+### Fixed
+
+- `coderoam run` locking now uses OS advisory locks on a stable file so racing
+  daemons cannot both claim a stale pid file.
+- JSONL runner shutdown no longer races with the subprocess wait goroutine
+  under the Go race detector.
+
 ## v0.1.7 - 2026-06-09
 
 ### Added
