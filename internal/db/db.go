@@ -592,6 +592,37 @@ func (s *Store) ListActiveInbox(ctx context.Context, profileID, status string, l
 	return records, rows.Err()
 }
 
+func (s *Store) ListClaimedActiveInboxForSession(ctx context.Context, profileID, sessionID string, limit int) ([]ActiveInboxRecord, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	query := `SELECT ` + activeInboxColumns + `
+		FROM active_inbox
+		WHERE profile_id = ? AND status = 'claimed'`
+	args := []any{profileID}
+	if sessionID != "" {
+		query += ` AND (session_id = ? OR claimed_by_session_id = ?)`
+		args = append(args, sessionID, sessionID)
+	}
+	query += ` ORDER BY id LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	records := []ActiveInboxRecord{}
+	for rows.Next() {
+		record, err := scanActiveInbox(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
 func (s *Store) ClaimNextActiveInbox(ctx context.Context, profileID string) (ActiveInboxRecord, bool, error) {
 	return s.ClaimNextActiveInboxForSession(ctx, profileID, "")
 }

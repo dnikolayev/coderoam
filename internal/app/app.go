@@ -2358,6 +2358,20 @@ func (s *cliState) inboxCommand() *cobra.Command {
 				return nil
 			}
 			if len(records) == 0 {
+				claimed, err := store.ListClaimedActiveInboxForSession(cmd.Context(), cfg.App.Profile, claimSessionID, drainLimit)
+				if err != nil {
+					return err
+				}
+				if len(claimed) > 0 {
+					for i, record := range claimed {
+						if i > 0 {
+							fmt.Println("\n---")
+						}
+						fmt.Println("Already claimed WhatsApp inbox message; handle it or requeue it if the previous consumer did not process it.")
+						printInboxRecord(record, "prompt", cfg)
+					}
+					return nil
+				}
 				fmt.Println("No pending WhatsApp inbox messages.")
 				return nil
 			}
@@ -3142,7 +3156,11 @@ Quick WhatsApp setup:
 For scripted or CI login flows, add --accept-session-risk after reading
 SECURITY.md. Interactive terminals will ask for acknowledgement instead.
 
-In the agent terminal that should own the session:
+In API-style agent sessions, drain the inbox at turn start:
+
+  coderoam inbox drain --format prompt --session-id codex-session
+
+Use a watcher only when the agent client continuously reads stdout while idle:
 
   coderoam inbox watch --format prompt --session-id codex-session
 

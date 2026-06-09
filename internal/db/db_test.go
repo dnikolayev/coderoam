@@ -246,6 +246,46 @@ func TestActiveInboxRequeueClaimed(t *testing.T) {
 	}
 }
 
+func TestListClaimedActiveInboxForSession(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, tc := range []struct {
+		id      string
+		alias   string
+		session string
+		text    string
+	}{
+		{id: "wa-codex", alias: "codex-session", session: "codex-session", text: "claimed for codex"},
+		{id: "wa-other", alias: "other-session", session: "other-session", text: "claimed for other"},
+	} {
+		msg := types.IncomingMessage{
+			ID:        tc.id,
+			ChatID:    tc.alias + "@g.us",
+			SenderID:  "sender@s.whatsapp.net",
+			Text:      tc.text,
+			Timestamp: time.Now(),
+		}
+		if _, _, err := store.StoreActiveInboxMessage(t.Context(), "test", tc.alias, tc.session, msg); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, err := store.ClaimNextActiveInboxForSession(t.Context(), "test", tc.session); err != nil {
+			t.Fatal(err)
+		} else if !ok {
+			t.Fatalf("expected claimed row for %s", tc.session)
+		}
+	}
+	claimed, err := store.ListClaimedActiveInboxForSession(t.Context(), "test", "codex-session", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 1 || claimed[0].ExternalMessageID != "wa-codex" {
+		t.Fatalf("claimed = %+v", claimed)
+	}
+}
+
 func TestActiveInboxRecoversAbandonedClaims(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
 	if err != nil {

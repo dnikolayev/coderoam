@@ -160,6 +160,8 @@ func TestSetupCommandPrintsMessengerConnectionHowTo(t *testing.T) {
 		"coderoam auth login --profile bot --qr",
 		"coderoam active start",
 		"--accept-session-risk",
+		"coderoam inbox drain --format prompt --session-id codex-session",
+		"continuously reads stdout while idle",
 		"coderoam inbox watch --format prompt --session-id codex-session",
 		"https://github.com/dnikolayev/coderoam/blob/main/docs/SETUP.md",
 	} {
@@ -852,6 +854,61 @@ func TestWatchActiveInboxSkipsStaleClaimedRow(t *testing.T) {
 	}
 	if len(claimed) != 2 || claimed[0].ExternalMessageID != "wa-previous" || claimed[1].ExternalMessageID != "wa-current" {
 		t.Fatalf("claimed rows = %+v", claimed)
+	}
+}
+
+func TestInboxDrainSurfacesSameSessionClaimedRows(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(dir, "bridge.sqlite3")
+	path := filepath.Join(dir, "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := types.IncomingMessage{
+		ID:        "wa-claimed",
+		ChatID:    "chat@g.us",
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "claimed but unseen",
+		RawText:   "claimed but unseen",
+		Timestamp: time.Now(),
+	}
+	if _, _, err := store.StoreActiveInboxMessage(t.Context(), cfg.App.Profile, "codex-session", "codex-session", msg); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.ClaimNextActiveInboxForSession(t.Context(), cfg.App.Profile, "codex-session"); err != nil {
+		t.Fatal(err)
+	} else if !ok {
+		t.Fatal("expected claimed row")
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	state := &cliState{configPath: path}
+	cmd := state.inboxCommand()
+	cmd.SetArgs([]string{"drain", "--session-id", "codex-session"})
+	out, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Already claimed WhatsApp inbox message",
+		"WhatsApp inbox message #",
+		"claimed but unseen",
+		"After handling it, run: coderoam inbox done",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("drain output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "No pending WhatsApp inbox messages.") {
+		t.Fatalf("drain hid claimed row:\n%s", out)
 	}
 }
 
