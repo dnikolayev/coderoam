@@ -29,6 +29,9 @@ Rules:
 - For voice memos or audio attachments, transcribe first; only apply commands
   from the audio after the transcript is available and slash-command
   authorization is shown.
+- For images or screenshots, inspect the downloaded `local_path` before
+  diagnosing visual issues or using the file as a product asset. If only
+  metadata/caption text is present, ask for a resend or media download.
 - Notify WhatsApp only for plan/checklist changes, blockers, owner questions,
   or final summaries.
 - Do not send routine tool output or minor progress.

@@ -284,6 +284,12 @@ Downloaded files stay in the local profile media directory, and prompt output
 includes `local_path` lines for agent tooling. If an audio attachment only shows
 metadata, the file was not downloaded or the download failed.
 
+Images and screenshots use the same `local_path` flow. Agents should inspect the
+downloaded file with available image tools before diagnosing UI issues, matching
+a screenshot, or copying the file into a web/product feature. If only metadata or
+a caption is present, the visual content is unavailable and the agent should ask
+for a resend or request `transport.download_media = true` instead of guessing.
+
 When `transcribe_audio` is enabled, coderoam runs the configured local command
 after download and stores stdout as `media[].transcript`, so runners receive the
 transcript directly in JSON and prompt output. The command receives the audio

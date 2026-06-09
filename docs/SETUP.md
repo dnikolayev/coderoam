@@ -95,6 +95,12 @@ If no messenger is linked, status and doctor point back to `coderoam setup`.
 
 ## Voice Notes
 
+The same local media path is used for screenshots and images. When
+`download_media = true`, prompt output includes `media[].local_path`; coding
+agents should inspect that file before diagnosing UI issues or using it as a
+product asset. If only metadata/caption text appears, the visual content was not
+downloaded and the agent should ask for a resend or media download.
+
 Voice transcription is optional and local. Install tools:
 
 ```sh

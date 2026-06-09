@@ -98,6 +98,12 @@ Media download is disabled by default. With `transport.download_media = true`,
 the bridge stores downloaded files under the local profile media directory and
 adds `local_path` lines to prompt output.
 
+For images and screenshots, inspect the downloaded `local_path` with available
+image tools before diagnosing a visual issue, matching a reference, or copying
+the file into a product/web feature. If the prompt only contains image metadata
+or a caption, the visual content is unavailable; ask for a resend or enable
+`transport.download_media` before relying on it.
+
 With `transport.transcribe_audio = true`, coderoam runs
 `transport.audio_transcribe_command` after download and stores stdout as
 `media[].transcript`, so all runners receive the transcript directly. For

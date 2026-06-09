@@ -95,6 +95,51 @@ func TestBuildPromptIncludesLocalAudioAttachment(t *testing.T) {
 	}
 }
 
+func TestBuildPromptIncludesLocalImageAttachment(t *testing.T) {
+	t.Setenv("CLAUDE_RUNNER_SYSTEM_PROMPT", "base prompt")
+	t.Setenv("CLAUDE_RUNNER_IMPORTANT_ONLY", "")
+
+	got := buildPrompt(request{
+		SenderID: "sender@s.whatsapp.net",
+		ChatID:   "group@g.us",
+		Text:     "[image] mime=image/png caption=button is broken",
+		Media: []mediaAttachment{{
+			Type:      "image",
+			MIMEType:  "image/png",
+			Caption:   "button is broken",
+			LocalPath: "/tmp/screenshot.png",
+		}},
+	})
+	for _, want := range []string{"Attachments:", "local_path: /tmp/screenshot.png", "image/screenshot is local", "product/reference asset", "caption: button is broken"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("prompt missing %q: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "transcribe it before applying") {
+		t.Fatalf("image prompt should not include audio transcription guidance: %q", got)
+	}
+}
+
+func TestBuildPromptExplainsMissingImageDownload(t *testing.T) {
+	got := buildPrompt(request{
+		SenderID: "sender@s.whatsapp.net",
+		ChatID:   "group@g.us",
+		Text:     "[image] mime=image/jpeg",
+		Media: []mediaAttachment{{
+			Type:     "image",
+			MIMEType: "image/jpeg",
+		}},
+	})
+	for _, want := range []string{"image/screenshot was not downloaded", "visual content is unavailable", "enable transport.download_media"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("prompt missing %q: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "local_path:") {
+		t.Fatalf("metadata-only image prompt should not include local_path: %q", got)
+	}
+}
+
 func TestBuildPromptExplainsMissingAudioDownload(t *testing.T) {
 	got := buildPrompt(request{
 		SenderID: "sender@s.whatsapp.net",

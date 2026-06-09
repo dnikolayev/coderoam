@@ -196,13 +196,20 @@ func formatAttachmentPrompt(media []mediaAttachment) string {
 		fmt.Fprintf(&out, "%d. %s\n", i+1, strings.Join(details, " "))
 		if item.LocalPath != "" {
 			fmt.Fprintf(&out, "   local_path: %s\n", item.LocalPath)
-			if isAudioAttachment(item) {
-				if item.Transcript == "" {
-					out.WriteString("   note: audio file is local; transcribe it before applying any instruction or slash command from the audio.\n")
-				}
+			switch {
+			case isAudioAttachment(item) && item.Transcript == "":
+				out.WriteString("   note: audio file is local; transcribe it before applying any instruction or slash command from the audio.\n")
+			case isVisualAttachment(item):
+				out.WriteString("   note: image/screenshot is local; inspect local_path with image tools before diagnosing visual/UI issues or using it as a product/reference asset.\n")
+			default:
+				out.WriteString("   note: media file is local; inspect local_path with appropriate tools before relying on its contents.\n")
 			}
 		} else if isAudioAttachment(item) {
 			out.WriteString("   note: audio was not downloaded; do not apply commands from it. Ask for a text resend or enable transport.download_media.\n")
+		} else if isVisualAttachment(item) {
+			out.WriteString("   note: image/screenshot was not downloaded; visual content is unavailable. Ask for a resend or enable transport.download_media before relying on it.\n")
+		} else {
+			out.WriteString("   note: media was not downloaded; local content is unavailable. Ask for a resend or enable transport.download_media before relying on it.\n")
 		}
 		if item.Transcript != "" {
 			fmt.Fprintf(&out, "   transcript: %s\n", item.Transcript)
@@ -284,6 +291,12 @@ func isAudioAttachment(item mediaAttachment) bool {
 	kind := strings.ToLower(strings.TrimSpace(item.Type))
 	mimeType := strings.ToLower(strings.TrimSpace(item.MIMEType))
 	return kind == "audio" || kind == "voice" || strings.HasPrefix(mimeType, "audio/")
+}
+
+func isVisualAttachment(item mediaAttachment) bool {
+	kind := strings.ToLower(strings.TrimSpace(item.Type))
+	mimeType := strings.ToLower(strings.TrimSpace(item.MIMEType))
+	return kind == "image" || kind == "screenshot" || kind == "sticker" || strings.HasPrefix(mimeType, "image/")
 }
 
 func writeResponse(resp response) {

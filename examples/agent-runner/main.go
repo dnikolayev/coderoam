@@ -225,11 +225,20 @@ func formatAttachmentPrompt(media []mediaAttachment) string {
 		fmt.Fprintf(&out, "%d. %s\n", i+1, strings.Join(details, " "))
 		if item.LocalPath != "" {
 			fmt.Fprintf(&out, "   local_path: %s\n", item.LocalPath)
-			if isAudioAttachment(item) && item.Transcript == "" {
+			switch {
+			case isAudioAttachment(item) && item.Transcript == "":
 				out.WriteString("   note: audio file is local; transcribe it before applying any instruction or slash command from the audio.\n")
+			case isVisualAttachment(item):
+				out.WriteString("   note: image/screenshot is local; inspect local_path with image tools before diagnosing visual/UI issues or using it as a product/reference asset.\n")
+			default:
+				out.WriteString("   note: media file is local; inspect local_path with appropriate tools before relying on its contents.\n")
 			}
 		} else if isAudioAttachment(item) {
 			out.WriteString("   note: audio was not downloaded; do not apply commands from it. Ask for a text resend or enable transport.download_media.\n")
+		} else if isVisualAttachment(item) {
+			out.WriteString("   note: image/screenshot was not downloaded; visual content is unavailable. Ask for a resend or enable transport.download_media before relying on it.\n")
+		} else {
+			out.WriteString("   note: media was not downloaded; local content is unavailable. Ask for a resend or enable transport.download_media before relying on it.\n")
 		}
 		if item.Transcript != "" {
 			fmt.Fprintf(&out, "   transcript: %s\n", item.Transcript)
@@ -285,6 +294,11 @@ func runAudioTranscriber(ctx context.Context, command, path string) (string, err
 func isAudioAttachment(item mediaAttachment) bool {
 	value := strings.ToLower(item.Type + " " + item.MIMEType)
 	return strings.Contains(value, "audio") || strings.Contains(value, "voice")
+}
+
+func isVisualAttachment(item mediaAttachment) bool {
+	value := strings.ToLower(strings.TrimSpace(item.Type) + " " + strings.TrimSpace(item.MIMEType))
+	return strings.Contains(value, "image") || strings.Contains(value, "screenshot") || strings.Contains(value, "sticker")
 }
 
 func envBool(key string, fallback bool) bool {

@@ -886,6 +886,72 @@ func TestWriteInboxRecordIncludesLocalAudioAttachment(t *testing.T) {
 	}
 }
 
+func TestWriteInboxRecordIncludesLocalImageAttachment(t *testing.T) {
+	cfg := config.Default()
+	record := db.ActiveInboxRecord{
+		ID:                10,
+		ChatID:            "chat@g.us",
+		ChatAlias:         "codex-session",
+		SessionID:         "codex-session",
+		SenderID:          "sender@s.whatsapp.net",
+		ExternalMessageID: "wa-image",
+		Text:              "[image] mime=image/png caption=button is broken",
+		RawText:           "[image] mime=image/png caption=button is broken",
+		Media: []types.MediaAttachment{{
+			Type:      "image",
+			MIMEType:  "image/png",
+			Caption:   "button is broken",
+			LocalPath: "/tmp/screenshot.png",
+		}},
+		ReceivedAt: time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC),
+	}
+	var out bytes.Buffer
+	if err := writeInboxRecord(&out, record, "prompt", cfg); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"Attachments:", "local_path: /tmp/screenshot.png", "image/screenshot is local", "product/reference asset", "caption: button is broken"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("prompt missing %q: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "transcribe it before applying") {
+		t.Fatalf("image prompt should not include audio transcription guidance: %q", got)
+	}
+}
+
+func TestWriteInboxRecordExplainsMissingImageDownload(t *testing.T) {
+	cfg := config.Default()
+	record := db.ActiveInboxRecord{
+		ID:                11,
+		ChatID:            "chat@g.us",
+		ChatAlias:         "codex-session",
+		SessionID:         "codex-session",
+		SenderID:          "sender@s.whatsapp.net",
+		ExternalMessageID: "wa-image-metadata",
+		Text:              "[image] mime=image/jpeg",
+		RawText:           "[image] mime=image/jpeg",
+		Media: []types.MediaAttachment{{
+			Type:     "image",
+			MIMEType: "image/jpeg",
+		}},
+		ReceivedAt: time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC),
+	}
+	var out bytes.Buffer
+	if err := writeInboxRecord(&out, record, "prompt", cfg); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"image/screenshot was not downloaded", "visual content is unavailable", "enable transport.download_media"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("prompt missing %q: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "local_path:") {
+		t.Fatalf("metadata-only image prompt should not include local_path: %q", got)
+	}
+}
+
 func TestWriteInboxRecordIncludesAudioTranscript(t *testing.T) {
 	cfg := config.Default()
 	record := db.ActiveInboxRecord{
