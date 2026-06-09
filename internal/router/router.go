@@ -438,7 +438,7 @@ func (r *Router) shouldSendActiveAck(kind string) bool {
 	case "verbose":
 		return true
 	default:
-		return kind == "fallback"
+		return kind == "fallback" || kind == "queued"
 	}
 }
 
@@ -453,7 +453,14 @@ func (r *Router) activeAckText(kind string, recordID int64, sessionID, runnerID 
 			return fmt.Sprintf("Received #%d by bridge for session %s. Queued for the active Codex session to claim; it will stay pending until a live watcher or Codex drain reads it.", recordID, sessionID)
 		}
 	}
-	return fmt.Sprintf("Working on this in session %s; grouping nearby messages briefly.", sessionID)
+	switch kind {
+	case "fallback":
+		return fmt.Sprintf("Received #%d. Working in session %s; grouping nearby messages briefly.", recordID, sessionID)
+	case "live":
+		return fmt.Sprintf("Received #%d. Queued for live session %s.", recordID, sessionID)
+	default:
+		return fmt.Sprintf("Queued #%d for session %s; waiting for the live watcher to claim it.", recordID, sessionID)
+	}
 }
 
 func (r *Router) activeSessionFallbackAllowed(runnerID string) bool {
@@ -468,10 +475,31 @@ func (r *Router) activeSessionFallbackAllowed(runnerID string) bool {
 	if strings.TrimSpace(cfg.Env["CODEX_RUNNER_SESSION_ID"]) != "" {
 		return false
 	}
+	if strings.TrimSpace(cfg.Env["CODEX_RUNNER_RESUME"]) != "" || activeEnvBool(cfg.Env["CODEX_RUNNER_RESUME_ALL"]) {
+		return false
+	}
 	if strings.TrimSpace(cfg.Env["CLAUDE_RUNNER_SESSION_ID"]) != "" {
 		return false
 	}
+	if strings.TrimSpace(cfg.Env["CLAUDE_RUNNER_RESUME"]) != "" || activeEnvBool(cfg.Env["CLAUDE_RUNNER_RESUME_ALL"]) {
+		return false
+	}
+	if strings.TrimSpace(cfg.Env["AGENT_RUNNER_SESSION_ID"]) != "" {
+		return false
+	}
+	if strings.TrimSpace(cfg.Env["AGENT_RUNNER_RESUME"]) != "" || activeEnvBool(cfg.Env["AGENT_RUNNER_RESUME_ALL"]) {
+		return false
+	}
 	return strings.TrimSpace(cfg.Command) != ""
+}
+
+func activeEnvBool(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *Router) runnerFor(chatID, runnerID string, runnerCfg config.RunnerConfig) runner.Runner {

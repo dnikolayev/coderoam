@@ -198,7 +198,7 @@ func TestSetupCommandDetectsAgentClientsAndPrintsSelectionCommands(t *testing.T)
 		"coderoam runners preset codex-active --id codex-active --workdir /workspace/project --yes",
 		"coderoam runners preset gemini-code --id gemini-code --workdir /workspace/project --yes",
 		"coderoam active start --name \"Codex Session\"",
-		"--alias claims-qa --session-id claims-qa --runner codex-active --yes",
+		"--alias claims-qa --session-id claims-qa --yes",
 		"docs/agents/codex.md",
 	} {
 		if !strings.Contains(out, want) {
@@ -224,7 +224,7 @@ func TestSetupCommandCanShowSelectedMissingAgent(t *testing.T) {
 	for _, want := range []string{
 		"Claude: not found",
 		"coderoam runners preset claude-code --id claude-code --workdir /workspace/project --yes",
-		"--alias review --session-id review --runner claude-code --yes",
+		"--alias review --session-id review --yes",
 		"docs/agents/claude.md",
 	} {
 		if !strings.Contains(out, want) {

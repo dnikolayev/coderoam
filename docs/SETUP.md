@@ -16,7 +16,7 @@ Build or install coderoam, then run:
 coderoam init
 coderoam auth login --profile bot --qr
 coderoam runners preset codex-active --id codex-active --workdir /path/to/workspace --yes
-coderoam active start --name "Coderoam Session" --participants "+15550001111" --alias codex-session --session-id codex-session --runner codex-active --yes
+coderoam active start --name "Coderoam Session" --participants "+15550001111" --alias codex-session --session-id codex-session --yes
 coderoam run
 ```
 
@@ -76,7 +76,6 @@ If the bridge account is already in the group:
 ```sh
 coderoam chats list --groups
 coderoam active enable "<group-id>" --alias codex-session --session-id codex-session --managed
-coderoam groups set-runner "<group-id>" codex-active
 coderoam run
 ```
 

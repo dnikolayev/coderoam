@@ -200,8 +200,8 @@ func TestRouterStoresActiveSessionMessageWithoutRunner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pendingOutbox) != 0 {
-		t.Fatalf("minimal ack mode should not queue no-runner active ack: %+v", pendingOutbox)
+	if len(pendingOutbox) != 1 || !strings.Contains(pendingOutbox[0].Text, "Queued #") || !strings.Contains(pendingOutbox[0].Text, "waiting for the live watcher") {
+		t.Fatalf("minimal ack mode should queue a waiting-for-watcher ack: %+v", pendingOutbox)
 	}
 	if len(ft.Read) != 0 {
 		t.Fatalf("active-session should not mark read before claim; count = %d", len(ft.Read))
@@ -214,7 +214,7 @@ func TestRouterStoresActiveSessionMessageWithoutRunner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pendingOutbox) != 0 {
+	if len(pendingOutbox) != 1 {
 		t.Fatalf("duplicate queued active outbox = %+v", pendingOutbox)
 	}
 	if len(ft.Read) != 0 {
@@ -777,6 +777,75 @@ func TestRouterActiveSessionQueuesPinnedSessionRunnerWithoutWatcher(t *testing.T
 	}
 	if len(receipts) != 0 {
 		t.Fatalf("read receipts = %+v", receipts)
+	}
+}
+
+func TestRouterActiveSessionQueuesCodexResumeRunnerWithoutWatcher(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Runner["codex-active"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
+		Env: map[string]string{
+			"GO_WANT_ROUTER_HELPER_PROCESS": "1",
+			"CODEX_RUNNER_RESUME":           "last",
+			"CODEX_RUNNER_RESUME_ALL":       "true",
+		},
+	}
+	cfg.Groups = []config.GroupConfig{{
+		ID:      "1203630active@g.us",
+		Alias:   "codex-session",
+		Runner:  "codex-active",
+		Mode:    config.GroupModeActiveSession,
+		Enabled: true,
+	}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	result := r.Handle(t.Context(), types.IncomingMessage{
+		ID:        "msg-codex-resume",
+		ChatID:    "1203630active@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "380506171414@s.whatsapp.net",
+		Text:      "do not block whatsapp",
+		RawText:   "do not block whatsapp",
+		Timestamp: time.Now(),
+	})
+	if result.Ignored {
+		t.Fatalf("message was ignored: %s", result.Reason)
+	}
+	if result.Reason != "active inbox queued" {
+		t.Fatalf("reason = %q", result.Reason)
+	}
+	if len(ft.Sent) != 0 {
+		t.Fatalf("codex resume fallback sent unexpectedly: %+v", ft.Sent)
+	}
+	unread, err := store.ListActiveInbox(t.Context(), "test", "unread", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unread) != 1 || unread[0].ExternalMessageID != "msg-codex-resume" || unread[0].ClaimedBySessionID != "" {
+		t.Fatalf("unread active inbox = %+v", unread)
+	}
+	receipts, err := store.PendingActiveReadReceipts(t.Context(), "test", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(receipts) != 0 {
+		t.Fatalf("read receipts = %+v", receipts)
+	}
+	pendingOutbox, err := store.PendingActiveOutbox(t.Context(), "test", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pendingOutbox) != 1 || !strings.Contains(pendingOutbox[0].Text, "Queued #") {
+		t.Fatalf("queued ack = %+v", pendingOutbox)
 	}
 }
 

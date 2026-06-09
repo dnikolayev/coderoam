@@ -3136,7 +3136,7 @@ Quick WhatsApp setup:
   coderoam init
   coderoam auth login --profile bot --qr
   coderoam runners preset codex-active --id codex-active --workdir /path/to/workspace --yes
-  coderoam active start --name "Coderoam Session" --participants "+15550001111" --alias codex-session --session-id codex-session --runner codex-active --yes
+  coderoam active start --name "Coderoam Session" --participants "+15550001111" --alias codex-session --session-id codex-session --yes
   coderoam run
 
 For scripted or CI login flows, add --accept-session-risk after reading
@@ -3211,7 +3211,7 @@ func setupAgentGuide(agent, workdir, sessionID string) string {
 		fmt.Fprintf(&b, "  %s: %s\n", detection.Display, status)
 		if detection.Found || agent != "auto" {
 			fmt.Fprintf(&b, "    configure: coderoam runners preset %s --id %s --workdir %s --yes\n", detection.Preset, detection.RunnerID, shellQuote(workdir))
-			fmt.Fprintf(&b, "    active group: coderoam active start --name %q --participants \"+15550001111\" --alias %s --session-id %s --runner %s --yes\n", detection.Display+" Session", shellQuote(sessionID), shellQuote(sessionID), detection.RunnerID)
+			fmt.Fprintf(&b, "    active group: coderoam active start --name %q --participants \"+15550001111\" --alias %s --session-id %s --yes\n", detection.Display+" Session", shellQuote(sessionID), shellQuote(sessionID))
 			fmt.Fprintf(&b, "    instructions: %s\n", detection.Instructions)
 		}
 	}

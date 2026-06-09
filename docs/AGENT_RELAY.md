@@ -197,7 +197,8 @@ WhatsApp group -> coderoam daemon -> active inbox -> unread until drain/watch
 ```
 
 Use a non-pinned runner for autonomous background replies. Use a pinned session
-runner only when messages must be claimed by the live client window.
+runner, or a resume runner such as `codex-active`, only when messages must be
+claimed by the live client window.
 
 Fallback processing batches nearby unread messages for the same session into one
 combined user turn. Defaults:
@@ -209,8 +210,9 @@ fallback_batch_limit = 8
 ack_mode = "minimal"
 ```
 
-`ack_mode = "minimal"` sends only a compact fallback status for the first
-message in a burst. `verbose` restores detailed `Received #...` messages.
-`off` suppresses active-session acknowledgements. Use
+`ack_mode = "minimal"` sends a compact status when a message is queued without a
+live watcher or when fallback starts, while staying quiet for healthy live
+watchers. `verbose` restores detailed `Received #...` messages. `off`
+suppresses active-session acknowledgements. Use
 `coderoam explain-last --chat <alias-or-id>` to inspect whether the latest
 message was queued, ignored, batched, blocked, or sent through fallback.
