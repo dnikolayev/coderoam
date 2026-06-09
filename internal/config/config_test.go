@@ -69,6 +69,15 @@ func TestApplyDefaultsNormalizesActiveConfig(t *testing.T) {
 	}
 }
 
+func TestApplyDefaultsDisablesUnsupportedSessionEncryption(t *testing.T) {
+	cfg := Default()
+	cfg.Security.StoreSessionsEncrypted = true
+	ApplyDefaults(&cfg)
+	if cfg.Security.StoreSessionsEncrypted {
+		t.Fatal("store_sessions_encrypted should normalize to false until encryption is implemented")
+	}
+}
+
 func TestValidateRunnerAllowsProcessJSONL(t *testing.T) {
 	err := ValidateRunner("default", RunnerConfig{
 		Mode:    "process-jsonl",

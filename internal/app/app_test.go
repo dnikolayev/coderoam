@@ -50,6 +50,11 @@ func TestBuildRunnerPresetEnablesImportantOnlyForResumableAssistants(t *testing.
 		markerKey    string
 	}{
 		{
+			name:         "codex-code",
+			importantKey: "CODEX_RUNNER_IMPORTANT_ONLY",
+			markerKey:    "CODEX_RUNNER_IGNORE_MARKER",
+		},
+		{
 			name:         "codex-active",
 			importantKey: "CODEX_RUNNER_IMPORTANT_ONLY",
 			markerKey:    "CODEX_RUNNER_IGNORE_MARKER",
@@ -162,9 +167,9 @@ func TestSetupCommandPrintsMessengerConnectionHowTo(t *testing.T) {
 		"coderoam auth login --profile bot --qr",
 		"coderoam active start",
 		"--accept-session-risk",
-		"coderoam inbox drain --format prompt --session-id codex-session",
+		"coderoam inbox drain --format prompt --session-id <session-id>",
 		"continuously reads stdout while idle",
-		"coderoam inbox watch --format prompt --session-id codex-session",
+		"coderoam inbox watch --format prompt --session-id <session-id>",
 		"https://github.com/dnikolayev/coderoam/blob/main/docs/SETUP.md",
 	} {
 		if !strings.Contains(out, want) {
@@ -199,10 +204,10 @@ func TestSetupCommandDetectsAgentClientsAndPrintsSelectionCommands(t *testing.T)
 		"Codex: found at /usr/local/bin/codex",
 		"Gemini: found at /opt/bin/gemini",
 		"Claude: not found",
-		"coderoam runners preset codex-active --id codex-active --workdir /workspace/project --yes",
+		"coderoam runners preset codex-code --id codex-code --workdir /workspace/project --yes",
 		"coderoam runners preset gemini-code --id gemini-code --workdir /workspace/project --yes",
 		"coderoam active start --name \"Codex Session\"",
-		"--alias claims-qa --session-id claims-qa --yes",
+		"--alias claims-qa-codex --session-id claims-qa-codex --runner codex-code --yes",
 		"docs/agents/codex.md",
 	} {
 		if !strings.Contains(out, want) {
@@ -228,7 +233,7 @@ func TestSetupCommandCanShowSelectedMissingAgent(t *testing.T) {
 	for _, want := range []string{
 		"Claude: not found",
 		"coderoam runners preset claude-code --id claude-code --workdir /workspace/project --yes",
-		"--alias review --session-id review --yes",
+		"--alias review --session-id review --runner claude-code --yes",
 		"docs/agents/claude.md",
 	} {
 		if !strings.Contains(out, want) {
@@ -237,6 +242,59 @@ func TestSetupCommandCanShowSelectedMissingAgent(t *testing.T) {
 	}
 	if strings.Contains(out, "Codex:") || strings.Contains(out, "Gemini:") {
 		t.Fatalf("selected-agent setup should not print all candidates:\n%s", out)
+	}
+}
+
+func TestInitCommandExistingConfigIsIdempotentAndNormalizesOldSessionEncryption(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	dbPath := filepath.Join(t.TempDir(), "coderoam.sqlite3")
+	raw := `
+[app]
+profile = "bot"
+database_path = "` + dbPath + `"
+log_level = "info"
+
+[security]
+store_sessions_encrypted = true
+`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	state := &cliState{configPath: cfgPath}
+	cmd := state.initCommand()
+	out, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"config already exists:",
+		"init: already complete",
+		"normalized unsupported store_sessions_encrypted=false",
+		"next: run `coderoam setup`",
+		"database: " + dbPath,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("init output missing %q:\n%s", want, out)
+		}
+	}
+	updated, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Security.StoreSessionsEncrypted {
+		t.Fatal("init should normalize old store_sessions_encrypted=true to false")
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "store_sessions_encrypted = true") {
+		t.Fatalf("config file still has unsupported true value:\n%s", string(data))
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("database was not created: %v", err)
 	}
 }
 
@@ -311,14 +369,14 @@ func TestSetupWizardConfiguresActiveSessionWithConfirmedAuthorizedNumber(t *test
 			t.Fatalf("sender allowlist = %+v, want normalized phone sender", list)
 		}
 	}
-	if _, ok := updated.Runner["codex-active"]; !ok {
-		t.Fatal("codex-active runner was not configured")
+	if _, ok := updated.Runner["codex-code"]; !ok {
+		t.Fatal("codex-code runner was not configured")
 	}
 	group, ok := resolveGroup(updated, "coderoam-test")
 	if !ok {
 		t.Fatalf("active group not configured: %+v", updated.Groups)
 	}
-	if group.Mode != config.GroupModeActiveSession || config.ActiveSessionID(group) != "codex-session" || group.Runner != "codex-active" {
+	if group.Mode != config.GroupModeActiveSession || config.ActiveSessionID(group) != "codex-session" || group.Runner != "codex-code" {
 		t.Fatalf("active group = %+v", group)
 	}
 	if len(ft.Sent) != 1 || ft.Sent[0].ChatID != "+15550001111" {

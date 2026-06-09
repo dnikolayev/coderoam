@@ -85,6 +85,7 @@ The WhatsApp Web transport is unofficial and may break or put the linked account
 		state.healthCommand(),
 		state.doctorCommand(),
 		state.setupCommand(),
+		state.runbookCommand(),
 		state.versionCommand(),
 		state.serviceCommand(),
 		state.explainLastCommand(),
@@ -199,28 +200,59 @@ func (s *cliState) initCommand() *cobra.Command {
 		Use:   "init",
 		Short: "Create config and local database",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, path, err := config.LoadOrDefault(s.configPath)
-			if err != nil {
-				return err
+			path := s.configPath
+			if path == "" {
+				path = config.DefaultConfigPath()
 			}
-			if _, statErr := os.Stat(path); statErr == nil && !force {
-				return fmt.Errorf("config already exists at %s; pass --force to overwrite", path)
+			exists := false
+			if _, statErr := os.Stat(path); statErr == nil {
+				exists = true
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				return statErr
+			}
+
+			var cfg config.Config
+			normalizeExistingConfig := false
+			if force || !exists {
+				cfg = config.Default()
+			} else {
+				if data, readErr := os.ReadFile(path); readErr == nil && strings.Contains(string(data), "store_sessions_encrypted = true") {
+					normalizeExistingConfig = true
+				}
+				var err error
+				cfg, err = config.Load(path)
+				if err != nil {
+					return err
+				}
 			}
 			if err := config.EnsureProfileDirs(cfg.App.Profile); err != nil {
 				return err
 			}
-			if err := config.Save(path, cfg); err != nil {
-				return err
+			if force || !exists || normalizeExistingConfig {
+				if err := config.Save(path, cfg); err != nil {
+					return err
+				}
 			}
 			store, err := db.Open(config.ResolveDatabasePath(cfg))
 			if err != nil {
 				return err
 			}
 			defer store.Close()
-			if err := store.EnsureProfile(cmd.Context(), cfg.App.Profile); err != nil {
+			err = store.EnsureProfile(cmd.Context(), cfg.App.Profile)
+			if err != nil {
 				return err
 			}
-			fmt.Printf("config: %s\n", path)
+			if exists && !force {
+				fmt.Printf("config already exists: %s\n", path)
+				if normalizeExistingConfig {
+					fmt.Println("init: already complete; normalized unsupported store_sessions_encrypted=false")
+				} else {
+					fmt.Println("init: already complete; no changes made")
+				}
+				fmt.Println("next: run `coderoam setup` or configure a runner with `coderoam runners preset ...`")
+			} else {
+				fmt.Printf("config: %s\n", path)
+			}
 			fmt.Printf("database: %s\n", config.ResolveDatabasePath(cfg))
 			fmt.Printf("whatsapp_session: %s\n", config.SessionStorePath(cfg.App.Profile))
 			return nil
@@ -232,6 +264,7 @@ func (s *cliState) initCommand() *cobra.Command {
 
 func (s *cliState) runCommand() *cobra.Command {
 	var profile string
+	var takeover bool
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Run the local WhatsApp bridge daemon",
@@ -248,6 +281,11 @@ func (s *cliState) runCommand() *cobra.Command {
 			if err := config.EnsureProfileDirs(cfg.App.Profile); err != nil {
 				return err
 			}
+			releaseLock, err := acquireRunLock(cfg.App.Profile, takeover)
+			if err != nil {
+				return err
+			}
+			defer releaseLock()
 			store, err := db.Open(config.ResolveDatabasePath(cfg))
 			if err != nil {
 				return err
@@ -407,6 +445,7 @@ func (s *cliState) runCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&profile, "profile", "", "profile name")
+	cmd.Flags().BoolVar(&takeover, "takeover", false, "take over the messenger connection from an already-running daemon (stops the incumbent)")
 	return cmd
 }
 
@@ -501,6 +540,7 @@ func (s *cliState) setupCommand() *cobra.Command {
 	var openQR bool
 	var qrImagePath string
 	var acceptSessionRisk bool
+	var noRunbook bool
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Set up a mobile coding session chat",
@@ -533,6 +573,7 @@ dedicated session group for continuing coding sessions from mobile.`,
 				OpenQR:            openQR,
 				QRImagePath:       qrImagePath,
 				AcceptSessionRisk: acceptSessionRisk,
+				NoRunbook:         noRunbook,
 			}
 			return s.runSetupWizard(cmd, opts)
 		},
@@ -540,6 +581,7 @@ dedicated session group for continuing coding sessions from mobile.`,
 	cmd.Flags().StringVar(&messenger, "messenger", "whatsapp", "messenger transport to configure")
 	cmd.Flags().StringVar(&agent, "agent", "auto", "agent client to configure: auto, codex, claude, gemini, opencode, or none")
 	cmd.Flags().StringVar(&workdir, "workdir", "", "workspace directory used by the selected agent")
+	cmd.Flags().BoolVar(&noRunbook, "no-runbook", false, "skip writing agent runbook files (CLAUDE.md/AGENTS.md/GEMINI.md) into the workspace")
 	cmd.Flags().StringVar(&sessionID, "session-id", "codex-session", "active session id")
 	cmd.Flags().StringVar(&profile, "profile", "", "profile name")
 	cmd.Flags().StringVar(&groupName, "group-name", "Coderoam Session", "new WhatsApp group name")
@@ -2006,13 +2048,19 @@ func (s *cliState) activeCommand() *cobra.Command {
 			if startName == "" {
 				return fmt.Errorf("--name is required")
 			}
-			participants := splitCSV(startParticipants)
-			if len(participants) == 0 {
-				return fmt.Errorf("--participants is required")
-			}
 			cfg, path, err := s.loadConfig()
 			if err != nil {
 				return err
+			}
+			participants := splitCSV(startParticipants)
+			if len(participants) == 0 {
+				// Default to the already-authorized owner(s) so a new lane can be
+				// created without re-asking for a number coderoam already knows.
+				participants = activeDefaultParticipants(cfg)
+				if len(participants) == 0 {
+					return fmt.Errorf("--participants is required (no admin/allowed sender configured to default to)")
+				}
+				fmt.Printf("no --participants given; inviting configured owner(s): %s\n", strings.Join(participants, ", "))
 			}
 			startRunner = strings.TrimSpace(startRunner)
 			if startRunner != "" {
@@ -2272,6 +2320,37 @@ func shouldArchiveRelayGroup(event types.GroupEvent) (bool, string) {
 type activeInviteResult struct {
 	Recipient string
 	ID        string
+}
+
+// activeDefaultParticipants returns the configured owner identities (admin
+// senders first, then allowed senders, deduped) to invite when active start is
+// run without explicit --participants, so an agent can create a new lane
+// without re-asking for a number coderoam already knows.
+func activeDefaultParticipants(cfg config.Config) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	combined := append(append([]string{}, cfg.Security.AdminSenderIDs...), cfg.Security.AllowedSenderIDs...)
+	for _, id := range combined {
+		id = strings.TrimSpace(id)
+		if !activeDefaultParticipantAllowed(id) || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+func activeDefaultParticipantAllowed(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	lower := strings.ToLower(id)
+	if strings.HasSuffix(lower, "@lid") || strings.HasSuffix(lower, "@g.us") {
+		return false
+	}
+	return true
 }
 
 func activeStartInviteRecipients(participants []string, inviteTo string) []string {
@@ -3220,6 +3299,7 @@ type setupWizardOptions struct {
 	OpenQR            bool
 	QRImagePath       string
 	AcceptSessionRisk bool
+	NoRunbook         bool
 }
 
 type setupAuthorizedIdentity struct {
@@ -3295,6 +3375,19 @@ func (s *cliState) runSetupWizard(cmd *cobra.Command, opts setupWizardOptions) e
 		return err
 	}
 	cfg.Runner[selected.RunnerID] = runnerCfg
+
+	if !opts.NoRunbook {
+		if files, rbErr := agentRunbookFiles("all"); rbErr == nil {
+			for _, name := range files {
+				rbPath := filepath.Join(workdir, name)
+				if _, werr := writeRunbookSection(rbPath, relayRunbook); werr != nil {
+					fmt.Fprintf(out, "warning: could not write %s: %v\n", rbPath, werr)
+				} else {
+					fmt.Fprintf(out, "installed agent runbook: %s\n", rbPath)
+				}
+			}
+		}
+	}
 
 	identities, err := setupCollectAuthorized(reader, out, opts.Authorized, interactive, opts.Yes)
 	if err != nil {
@@ -3398,20 +3491,26 @@ Quick WhatsApp setup:
 
   coderoam init
   coderoam auth login --profile bot --qr
-  coderoam runners preset codex-active --id codex-active --workdir /path/to/workspace --yes
-  coderoam active start --name "Coderoam Session" --participants "+15550001111" --alias codex-session --session-id codex-session --yes
+  coderoam runners preset codex-code --id codex-code --workdir /path/to/workspace --yes
+  coderoam runbook --workdir /path/to/workspace
+  coderoam active start --name "Codex Session" --participants "+15550001111" --alias codex-session --session-id codex-session --runner codex-code --yes
   coderoam run
+
+For parallel clients, create one active group per client and never reuse session
+ids. For example, use codex-session with codex-code and claude-session with
+claude-code.
 
 For scripted or CI login flows, add --accept-session-risk after reading
 SECURITY.md. Interactive terminals will ask for acknowledgement instead.
 
-In API-style agent sessions, drain the inbox at turn start:
+In API-style agent sessions, drain the inbox at turn start with that group's
+session id:
 
-  coderoam inbox drain --format prompt --session-id codex-session
+  coderoam inbox drain --format prompt --session-id <session-id>
 
 Use a watcher only when the agent client continuously reads stdout while idle:
 
-  coderoam inbox watch --format prompt --session-id codex-session
+  coderoam inbox watch --format prompt --session-id <session-id>
 
 For an existing WhatsApp group, use:
 
@@ -3477,8 +3576,9 @@ func setupAgentGuide(agent, workdir, sessionID string) string {
 		}
 		fmt.Fprintf(&b, "  %s: %s\n", detection.Display, status)
 		if detection.Found || agent != "auto" {
+			detectionSessionID := setupGuideSessionID(agent, sessionID, detection.Key)
 			fmt.Fprintf(&b, "    configure: coderoam runners preset %s --id %s --workdir %s --yes\n", detection.Preset, detection.RunnerID, shellQuote(workdir))
-			fmt.Fprintf(&b, "    active group: coderoam active start --name %q --participants \"+15550001111\" --alias %s --session-id %s --yes\n", detection.Display+" Session", shellQuote(sessionID), shellQuote(sessionID))
+			fmt.Fprintf(&b, "    active group: coderoam active start --name %q --participants \"+15550001111\" --alias %s --session-id %s --runner %s --yes\n", detection.Display+" Session", shellQuote(detectionSessionID), shellQuote(detectionSessionID), shellQuote(detection.RunnerID))
 			fmt.Fprintf(&b, "    instructions: %s\n", detection.Instructions)
 		}
 	}
@@ -3488,6 +3588,29 @@ func setupAgentGuide(agent, workdir, sessionID string) string {
 	}
 	b.WriteString("\n")
 	return b.String()
+}
+
+func setupGuideSessionID(agent, requested, key string) string {
+	requested = strings.TrimSpace(requested)
+	key = strings.TrimSpace(key)
+	if requested == "" {
+		requested = "codex-session"
+	}
+	if strings.ToLower(strings.TrimSpace(agent)) != "auto" {
+		return requested
+	}
+	switch requested {
+	case "codex-session", "coderoam-session":
+		if key != "" {
+			return key + "-session"
+		}
+		return requested
+	default:
+		if key != "" {
+			return requested + "-" + key
+		}
+		return requested
+	}
 }
 
 func setupSelectAgent(reader *bufio.Reader, out io.Writer, agent string, interactive bool, yes bool) (setupAgentDetection, error) {
@@ -3669,7 +3792,7 @@ func setupAuthorizedDisplays(identities []setupAuthorizedIdentity) []string {
 
 func detectSetupAgents(agent string) ([]setupAgentDetection, []setupAgentDetection, bool) {
 	candidates := []setupAgentCandidate{
-		{Key: "codex", Display: "Codex", Command: "codex", Preset: "codex-active", RunnerID: "codex-active", Instructions: "docs/agents/codex.md"},
+		{Key: "codex", Display: "Codex", Command: "codex", Preset: "codex-code", RunnerID: "codex-code", Instructions: "docs/agents/codex.md"},
 		{Key: "claude", Display: "Claude", Command: "claude", Preset: "claude-code", RunnerID: "claude-code", Instructions: "docs/agents/claude.md"},
 		{Key: "gemini", Display: "Gemini", Command: "gemini", Preset: "gemini-code", RunnerID: "gemini-code", Instructions: "docs/agents/gemini.md"},
 		{Key: "opencode", Display: "OpenCode", Command: "opencode", Preset: "opencode-code", RunnerID: "opencode-code", Instructions: "docs/agents/opencode.md"},
@@ -4164,6 +4287,8 @@ func buildRunnerPreset(name, workdir string, timeoutSeconds int, model, systemPr
 			"CODEX_RUNNER_WORKDIR":         workdir,
 			"CODEX_RUNNER_SANDBOX":         "workspace-write",
 			"CODEX_RUNNER_APPROVAL_POLICY": "never",
+			"CODEX_RUNNER_IMPORTANT_ONLY":  "true",
+			"CODEX_RUNNER_IGNORE_MARKER":   "[[coderoam-ignore]]",
 			"CODEX_RUNNER_TIMEOUT_SECONDS": strconv.Itoa(timeoutSeconds),
 			"CODEX_RUNNER_SYSTEM_PROMPT":   defaultCodexPrompt(true),
 		}

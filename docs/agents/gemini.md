@@ -11,14 +11,18 @@ At session start, check:
 
 `rtk ./coderoam/bin/coderoam active status`
 
+Pick this client's session id from the delivered WhatsApp prompt, or from the
+row in `active status` that belongs to this Gemini group. Do not reuse another
+client's session id.
+
 Drain pending input at turn start and handoff:
 
-`rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id codex-session`
+`rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id <session-id>`
 
 Use a live watcher only when Gemini can keep a long-running local command open
 and continuously read stdout while idle:
 
-`rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id codex-session`
+`rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id <session-id>`
 
 Treat watched or drained inbox prompt blocks as user input. After handling a
 claimed inbox row:
@@ -37,7 +41,7 @@ details; ask for a resend or media download.
 Send WhatsApp notifications only for important updates: plan/checklist changes,
 blockers, questions that require the owner, or final summaries.
 
-`rtk ./coderoam/bin/coderoam notify --chat codex-session --important --text "<message>"`
+`rtk ./coderoam/bin/coderoam notify --chat <chat-or-session-alias> --important --text "<message>"`
 
 If the current turn came from a `coderoam` runner prompt with `Sender`,
 `Chat`, and `Message`, the daemon already claimed that WhatsApp row. Do not mark

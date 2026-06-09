@@ -2,6 +2,12 @@
 
 `coderoam` is an early local-first project. Support is best-effort.
 
+For community setup help, ideas, and early user feedback, join the Discord
+server: https://discord.gg/kkV6ZmkRHA
+
+Do not post security vulnerabilities, credentials, QR payloads, phone numbers,
+chat IDs, or private message contents in Discord.
+
 ## Before Asking For Help
 
 Run:

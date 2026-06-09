@@ -60,15 +60,15 @@ Manual equivalent:
 ```sh
 coderoam init
 coderoam auth login --profile bot --qr
-coderoam runners preset codex-active --id codex-active --workdir /path/to/workspace --yes
-coderoam active start --name "Coderoam Session" --participants "+15550001111" --alias codex-session --session-id codex-session --yes
+coderoam runners preset codex-code --id codex-code --workdir /path/to/workspace --yes
+coderoam active start --name "Codex Session" --participants "+15550001111" --alias codex-session --session-id codex-session --runner codex-code --yes
 coderoam run
 ```
 
 In the terminal that owns the active agent session:
 
 ```sh
-coderoam inbox watch --format prompt --session-id codex-session
+coderoam inbox watch --format prompt --session-id <session-id>
 ```
 
 Read the full setup guide in [SETUP.md](SETUP.md).
@@ -76,12 +76,12 @@ Read the full setup guide in [SETUP.md](SETUP.md).
 ## Homebrew Core Readiness
 
 Homebrew core expects new formulae to have a stable, tagged version and pass the
-formula audit. For `v0.1.6`, create and push the tag only after release preflight
+formula audit. For `v0.1.7`, create and push the tag only after release preflight
 passes:
 
 ```sh
-git tag -a v0.1.6 -m "coderoam v0.1.6"
-git push origin v0.1.6
+git tag -a v0.1.7 -m "coderoam v0.1.7"
+git push origin v0.1.7
 ```
 
 The `Release` workflow will upload:

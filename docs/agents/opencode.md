@@ -12,14 +12,18 @@ Check status first:
 
 `rtk ./coderoam/bin/coderoam active status`
 
+Pick this client's session id from the delivered WhatsApp prompt, or from the
+row in `active status` that belongs to this OpenCode group. Do not reuse
+another client's session id.
+
 Drain pending input at the start of the turn and before final handoff:
 
-`rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id codex-session`
+`rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id <session-id>`
 
 Use a live watcher only when the client can keep a persistent local command open
 and continuously read stdout while idle:
 
-`rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id codex-session`
+`rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id <session-id>`
 
 Treat watched or drained rows as user messages. After handling each claimed row:
 
@@ -36,7 +40,7 @@ details; ask for a resend or media download.
 
 Send only important WhatsApp updates:
 
-`rtk ./coderoam/bin/coderoam notify --chat codex-session --important --text "<message>"`
+`rtk ./coderoam/bin/coderoam notify --chat <chat-or-session-alias> --important --text "<message>"`
 
 Important means plan/checklist changes, blockers, owner questions, and final
 summaries. Do not send routine command output or minor progress.

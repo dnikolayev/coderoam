@@ -7,6 +7,9 @@ CLI coding agents. It lets you continue a coding session from your phone, invite
 other people into the session chat, and keep each work lane isolated in its own
 group.
 
+Community: [join the Discord server](https://discord.gg/kkV6ZmkRHA) for setup
+help, ideas, and early user feedback.
+
 ## New install? Start here
 
 Copy-paste on macOS/Linux with Homebrew:
@@ -39,7 +42,7 @@ stalkerware, or contacting people without consent.
 
 ## Status
 
-Current implementation: v0.1.6 guided mobile session onboarding.
+Current implementation: v0.1.7 parallel mobile agent sessions.
 
 Project maturity: early MVP. The public API, config shape, database schema, and
 runner protocol can still change before v1.0.
@@ -128,6 +131,11 @@ Initialize local config:
 bin/coderoam init
 ```
 
+`init` is idempotent. If a config already exists, it keeps the existing local
+settings, ensures the profile database exists, and points you back to
+`coderoam setup` or `coderoam runners preset ...`. Use `--force` only when you
+intend to reset local config.
+
 Configure a runner:
 
 ```sh
@@ -158,6 +166,10 @@ bin/coderoam runners preset codex-code \
   --workdir /path/to/workspace \
   --yes
 ```
+
+`codex-code` is the safer default for a dedicated WhatsApp group that should
+keep working when no live watcher is attached. It posts only important updates
+back to WhatsApp by default.
 
 To continue an existing Codex session from WhatsApp, use `codex-active`.
 This resumes the most recent recorded Codex session and sends each WhatsApp
@@ -221,6 +233,7 @@ bin/coderoam active start \
   --participants "+15550001111" \
   --alias claims-qa \
   --session-id claims-qa \
+  --runner codex-code \
   --yes
 ```
 
@@ -270,6 +283,20 @@ per session and emits claimed messages immediately; use it only when that
 consumer continuously reads stdout. Use `--format jsonl` for machine-readable
 local agent integrations. Media-only messages are queued with local
 metadata/captions rather than downloaded by default.
+
+For parallel Codex and Claude chats, configure separate runners and separate
+session ids:
+
+```sh
+bin/coderoam runners preset codex-code --id codex-code --workdir /path/to/workspace --yes
+bin/coderoam active start --name "Codex Session" --participants "+15550001111" --alias codex-session --session-id codex-session --runner codex-code --yes
+
+bin/coderoam runners preset claude-code --id claude-code --workdir /path/to/workspace --yes
+bin/coderoam active start --name "Claude Session" --participants "+15550001111" --alias claude-session --session-id claude-session --runner claude-code --yes
+```
+
+Both chats can use the same authorized owner, but they must not share the same
+`active_session_id`; otherwise both clients read from the same local inbox lane.
 
 When no live watcher is connected and the active-session group has a safe
 fallback runner, the bridge waits briefly for related WhatsApp messages and

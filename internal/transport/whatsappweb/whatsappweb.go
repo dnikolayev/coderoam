@@ -94,6 +94,16 @@ func NewWithOptions(ctx context.Context, sessionPath string, logLevel string, op
 	return t, nil
 }
 
+// qrLoginWindow is how long QR login stays scannable, re-requesting fresh
+// codes as WhatsApp rotates them every ~20s, before giving up.
+const qrLoginWindow = 5 * time.Minute
+
+// postPairSettle is how long auth login keeps the new connection open after a
+// successful pair so whatsmeow can finish the prekey upload and initial history
+// sync that the phone's "Logging in…" screen waits on. Exiting immediately can
+// leave the device half-registered and get it logged out by the server.
+const postPairSettle = 20 * time.Second
+
 func (t *Transport) Login(ctx context.Context, method types.LoginMethod) error {
 	if t.client.Store.ID != nil {
 		return t.Connect(ctx)
@@ -109,50 +119,90 @@ func (t *Transport) Login(ctx context.Context, method types.LoginMethod) error {
 		fmt.Printf("Pairing code for %s: %s\n", method.PairCodePhone, code)
 		return nil
 	}
-	qrChan, err := t.client.GetQRChannel(ctx)
-	if err != nil {
-		return err
-	}
-	if err := t.client.ConnectContext(ctx); err != nil {
-		return err
-	}
-	for evt := range qrChan {
-		switch evt.Event {
-		case "code":
-			fmt.Println("Scan this QR code with WhatsApp: Settings -> Linked Devices -> Link a Device")
-			qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
-			qrPath := method.QRImagePath
-			if qrPath == "" {
-				qrPath = t.sessionPath + ".qr.png"
-			}
-			if err := qrcode.WriteFile(evt.Code, qrcode.Medium, 512, qrPath); err == nil {
-				fmt.Printf("QR image: %s\n", qrPath)
-				if method.OpenQRImage {
-					if err := openPath(qrPath); err != nil {
-						fmt.Printf("QR image open failed: %v\n", err)
-					}
-				}
-			} else {
-				fmt.Printf("QR image write failed: %v\n", err)
-			}
-		case "success":
-			fmt.Println("WhatsApp login succeeded.")
-			return nil
-		case "timeout":
-			return fmt.Errorf("QR login timed out")
-		case "error":
-			if evt.Error != nil {
-				return evt.Error
-			}
-			return fmt.Errorf("QR login failed")
-		default:
-			fmt.Printf("WhatsApp login event: %s\n", evt.Event)
+	// Keep the QR login scannable for a window (default 5 minutes) instead of
+	// giving up after whatsmeow's short code batch (~2 min), which leaves the
+	// phone with a dead endpoint ("check your connection") if the scan lands
+	// late. WhatsApp still rotates each individual code every ~20s server-side,
+	// so on a batch timeout we re-request a fresh batch until the window is up.
+	// The image viewer is opened only once to avoid a modal popup per rotation.
+	qrWindow := qrLoginWindow
+	deadline := time.Now().Add(qrWindow)
+	openedViewer := false
+	for {
+		qrChan, err := t.client.GetQRChannel(ctx)
+		if err != nil {
+			return err
 		}
+		if err := t.client.ConnectContext(ctx); err != nil {
+			return err
+		}
+		timedOut := false
+		for evt := range qrChan {
+			if evt.Event == "code" {
+				fmt.Println("Scan this QR code with WhatsApp: Settings -> Linked Devices -> Link a Device")
+				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
+				qrPath := method.QRImagePath
+				if qrPath == "" {
+					qrPath = t.sessionPath + ".qr.png"
+				}
+				if err := qrcode.WriteFile(evt.Code, qrcode.Medium, 512, qrPath); err == nil {
+					fmt.Printf("QR image: %s\n", qrPath)
+					if method.OpenQRImage && !openedViewer {
+						if err := openPath(qrPath); err != nil {
+							fmt.Printf("QR image open failed: %v\n", err)
+						}
+						openedViewer = true
+					}
+				} else {
+					fmt.Printf("QR image write failed: %v\n", err)
+				}
+				continue
+			}
+			switch evt.Event {
+			case "success":
+				fmt.Println("WhatsApp login succeeded.")
+				t.settleAfterPairing(ctx)
+				return nil
+			case "timeout":
+				timedOut = true
+			case "error":
+				if evt.Error != nil {
+					return evt.Error
+				}
+				return fmt.Errorf("QR login failed")
+			default:
+				fmt.Printf("WhatsApp login event: %s\n", evt.Event)
+			}
+			if timedOut {
+				break
+			}
+		}
+		if !timedOut {
+			if t.client.IsLoggedIn() {
+				return nil
+			}
+			return fmt.Errorf("QR login ended before account was linked")
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("QR login timed out after %s without a scan", qrWindow)
+		}
+		fmt.Printf("QR code batch expired; fetching a fresh code (about %s left to scan)\n", time.Until(deadline).Round(time.Second))
+		t.client.Disconnect()
 	}
-	if t.client.IsLoggedIn() {
-		return nil
+}
+
+// settleAfterPairing holds the freshly linked connection open briefly so
+// whatsmeow can finish the post-pair prekey upload and initial history sync the
+// phone's "Logging in…" screen waits on, then returns. This makes a standalone
+// `auth login` link the device reliably without needing `run` to be started
+// immediately afterward.
+func (t *Transport) settleAfterPairing(ctx context.Context) {
+	fmt.Printf("Finalizing device link; holding the connection ~%s to finish syncing...\n", postPairSettle)
+	select {
+	case <-ctx.Done():
+	case <-time.After(postPairSettle):
 	}
-	return fmt.Errorf("QR login ended before account was linked")
+	fmt.Println("Device link finalized.")
 }
 
 func (t *Transport) Connect(ctx context.Context) error {

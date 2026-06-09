@@ -320,6 +320,9 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Reply.ChunkSeparator == "" {
 		cfg.Reply.ChunkSeparator = defaults.Reply.ChunkSeparator
 	}
+	// Encrypted-at-rest session storage is not implemented. Normalize older
+	// config files that carried the previous misleading default.
+	cfg.Security.StoreSessionsEncrypted = false
 	if cfg.Runner == nil {
 		cfg.Runner = map[string]RunnerConfig{}
 	}

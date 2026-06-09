@@ -12,14 +12,17 @@ Required commands:
 
 - Status:
   `rtk ./coderoam/bin/coderoam active status`
+- Pick this client's session id from the delivered WhatsApp prompt, or from the
+  row in `active status` that belongs to this group. Do not reuse another
+  client's session id.
 - Drain at turn start:
-  `rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id codex-session`
+  `rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id <session-id>`
 - Live watch, only when persistent stdout is continuously consumed:
-  `rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id codex-session`
+  `rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id <session-id>`
 - Mark handled:
   `rtk ./coderoam/bin/coderoam inbox done <id>`
 - Important update:
-  `rtk ./coderoam/bin/coderoam notify --chat codex-session --important --text "<message>"`
+  `rtk ./coderoam/bin/coderoam notify --chat <chat-or-session-alias> --important --text "<message>"`
 
 Rules:
 

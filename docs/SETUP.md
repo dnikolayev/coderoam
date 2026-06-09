@@ -26,11 +26,16 @@ The setup wizard:
 - requires exact confirmation of those numbers before sending invites
 - creates a dedicated WhatsApp group and configures sender allowlisting
 
+If a config already exists, do not reset it. `coderoam init` is idempotent and
+will report that initialization is already complete; continue with
+`coderoam setup`, `coderoam doctor`, or `coderoam runners preset ...`.
+
 For docs or automation, print the manual command guide instead:
 
 ```sh
-coderoam setup --print --agent auto --workdir /path/to/workspace --session-id codex-session
+coderoam setup --print --agent auto --workdir /path/to/workspace
 coderoam setup --print --agent codex --workdir /path/to/workspace --session-id codex-session
+coderoam setup --print --agent claude --workdir /path/to/workspace --session-id claude-session
 ```
 
 `active start` creates a dedicated WhatsApp group and direct-messages the group
@@ -38,17 +43,32 @@ invite link to `--participants` by default. The user opens that link to join the
 session chat when WhatsApp privacy settings do not add them automatically. Pass
 `--invite-to` to DM the link to a different phone number or WhatsApp JID.
 
-In an API-style Codex session, drain the inbox at turn start:
+For parallel Codex and Claude work, create separate active groups and session
+ids. A safe layout is:
 
 ```sh
-coderoam inbox drain --format prompt --session-id codex-session
+coderoam runners preset codex-code --id codex-code --workdir /path/to/workspace --yes
+coderoam active start --name "Codex Session" --participants "+15550001111" --alias codex-session --session-id codex-session --runner codex-code --yes
+
+coderoam runners preset claude-code --id claude-code --workdir /path/to/workspace --yes
+coderoam active start --name "Claude Session" --participants "+15550001111" --alias claude-session --session-id claude-session --runner claude-code --yes
+```
+
+Do not point both groups at the same `active_session_id`; that makes both
+clients consume the same inbox lane.
+
+In an API-style agent session, drain the inbox at turn start using that group's
+session id:
+
+```sh
+coderoam inbox drain --format prompt --session-id <session-id>
 ```
 
 In a terminal client that continuously reads command output, you can instead run
 a watcher:
 
 ```sh
-coderoam inbox watch --format prompt --session-id codex-session
+coderoam inbox watch --format prompt --session-id <session-id>
 ```
 
 When someone sends a message in the session group, coderoam stores it in the
@@ -60,9 +80,9 @@ To keep a watcher alive across terminal restarts for a continuously-reading
 client, install an OS user service:
 
 ```sh
-coderoam service install --session-id codex-session --profile bot
-coderoam service start --session-id codex-session --profile bot
-coderoam service status --session-id codex-session --profile bot
+coderoam service install --session-id <session-id> --profile bot
+coderoam service start --session-id <session-id> --profile bot
+coderoam service status --session-id <session-id> --profile bot
 ```
 
 Use `--dry-run` with any service command to inspect the generated LaunchAgent,

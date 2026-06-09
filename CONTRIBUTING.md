@@ -6,6 +6,9 @@ Contributions must preserve the local-first, personal-use posture of this
 project. This is not a bulk messaging platform, a SaaS automation backend, or a
 consumer WhatsApp API product.
 
+For questions before opening a pull request, use GitHub issues or the community
+Discord server: https://discord.gg/kkV6ZmkRHA
+
 Do not add features for:
 
 - Bulk messaging.

@@ -19,22 +19,29 @@ This document defines how local AI clients should consume WhatsApp input from
 
 ## Main Workflow
 
+Before configuring a runner, `coderoam init` is safe to run. If a config already
+exists, it should be treated as an idempotent "already initialized" check, not
+as a reason to overwrite local settings. Do not use `--force` unless the owner
+explicitly asks to reset the config. If the config has no runner command yet,
+configure the intended agent with `coderoam runners preset ...` or run the
+interactive `coderoam setup` wizard.
+
 Use these commands from the workspace that owns the bridge:
 
 ```sh
 rtk ./coderoam/bin/coderoam active status
-rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id codex-session
-rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id codex-session
+rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id <session-id>
+rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id <session-id>
 rtk ./coderoam/bin/coderoam inbox done <id>
-rtk ./coderoam/bin/coderoam notify --chat codex-session --important --text "<message>"
+rtk ./coderoam/bin/coderoam notify --chat <chat-or-session-alias> --important --text "<message>"
 ```
 
 For a long-lived local session, install the watcher as a user service:
 
 ```sh
-rtk ./coderoam/bin/coderoam service install --session-id codex-session --profile bot
-rtk ./coderoam/bin/coderoam service start --session-id codex-session --profile bot
-rtk ./coderoam/bin/coderoam service status --session-id codex-session --profile bot
+rtk ./coderoam/bin/coderoam service install --session-id <session-id> --profile bot
+rtk ./coderoam/bin/coderoam service start --session-id <session-id> --profile bot
+rtk ./coderoam/bin/coderoam service status --session-id <session-id> --profile bot
 ```
 
 The service runs the same watcher path with takeover and restart backoff. Add
@@ -71,6 +78,7 @@ rtk ./coderoam/bin/coderoam active start \
   --participants "+15550001111" \
   --alias claims-qa \
   --session-id claims-qa \
+  --runner codex-code \
   --yes
 ```
 
@@ -84,8 +92,15 @@ Then start a separate client or terminal watcher with that session id:
 rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id claims-qa
 ```
 
-Leave `--runner` unset unless you explicitly want a configured fallback runner
-to process messages when no watcher is connected.
+Pass `--runner <id>` when this group should keep working through a configured
+fallback runner if no watcher is connected. Omit `--runner` when messages must
+stay queued until the live client explicitly drains or watches them.
+
+For multiple clients, use one group and session id per client. For example,
+Codex can use `codex-session` with `codex-code`, while Claude can use
+`claude-session` with `claude-code`. Do not point both groups at the same
+`active_session_id`, because that makes both clients consume the same local
+inbox lane.
 
 Groups created with `active start` are relay-managed and should map one
 WhatsApp group to one active session. If a participant leaves that managed
