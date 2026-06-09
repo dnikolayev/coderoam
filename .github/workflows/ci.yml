@@ -62,7 +62,7 @@ jobs:
       - name: golangci-lint
         # .golangci.yml uses the v2 config schema, which requires
         # golangci-lint v2 and therefore golangci-lint-action v7 or newer.
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
 
