@@ -6,6 +6,22 @@ protocols.
 
 ## Unreleased
 
+## v0.1.2 - 2026-06-09
+
+### Added
+
+- Top-level README onboarding now includes a one-line Homebrew install and
+  `coderoam setup` command for fast copy-paste setup.
+- Active inbox and runner prompts now guide agents to inspect downloaded
+  image/screenshot `local_path` files before diagnosing visual issues or using
+  them as product assets.
+- Metadata-only image prompts now explicitly say visual content is unavailable
+  and tell agents not to guess from captions alone.
+- Media guidance is documented in README, setup, relay, and per-agent
+  instruction files.
+- Focused tests cover image/screenshot prompt behavior for active inbox,
+  Codex, Claude, and generic agent runners.
+
 ## v0.1.1 - 2026-06-08
 
 ### Added
