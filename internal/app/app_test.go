@@ -240,6 +240,30 @@ func TestSetupCommandCanShowSelectedMissingAgent(t *testing.T) {
 	}
 }
 
+func TestSetupSelectAgentReturnsErrorOnEOF(t *testing.T) {
+	originalLookPath := commandLookPath
+	commandLookPath = func(name string) (string, error) {
+		switch name {
+		case "codex":
+			return "/usr/local/bin/codex", nil
+		case "claude":
+			return "/usr/local/bin/claude", nil
+		default:
+			return "", os.ErrNotExist
+		}
+	}
+	defer func() { commandLookPath = originalLookPath }()
+
+	var out bytes.Buffer
+	_, err := setupSelectAgent(bufio.NewReader(strings.NewReader("")), &out, "auto", true, false)
+	if err == nil {
+		t.Fatal("expected EOF selection error")
+	}
+	if !strings.Contains(err.Error(), "no agent selection received") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestSetupWizardConfiguresActiveSessionWithConfirmedAuthorizedNumber(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	cfg := config.Default()

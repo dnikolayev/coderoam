@@ -3541,6 +3541,9 @@ func setupSelectAgent(reader *bufio.Reader, out io.Writer, agent string, interac
 			fmt.Fprintf(out, "Agent: %s\n", chosen.Display)
 			return chosen, nil
 		}
+		if errors.Is(err, io.EOF) {
+			return setupAgentDetection{}, fmt.Errorf("no agent selection received on stdin; rerun with --agent codex|claude|gemini|opencode, --print, or --yes")
+		}
 		fmt.Fprintln(out, "Enter one of the listed numbers.")
 	}
 }
