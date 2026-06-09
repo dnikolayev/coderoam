@@ -3,6 +3,10 @@
 Use this for any local AI client that can run shell commands and follow project
 instructions.
 
+Commands below use `coderoam` as installed by Homebrew; from a source checkout,
+use `./bin/coderoam` instead. Pick one form and use it consistently in the
+instruction file you hand to the agent.
+
 ```md
 ## Active WhatsApp Relay
 
@@ -11,18 +15,18 @@ This workspace may receive WhatsApp input through `coderoam`.
 Required commands:
 
 - Status:
-  `rtk ./coderoam/bin/coderoam active status`
+  `coderoam active status`
 - Pick this client's session id from the delivered WhatsApp prompt, or from the
   row in `active status` that belongs to this group. Do not reuse another
   client's session id.
 - Drain at turn start:
-  `rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id <session-id>`
+  `coderoam inbox drain --format prompt --session-id <session-id>`
 - Live watch, only when persistent stdout is continuously consumed:
-  `rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id <session-id>`
+  `coderoam inbox watch --format prompt --session-id <session-id>`
 - Mark handled:
-  `rtk ./coderoam/bin/coderoam inbox done <id>`
+  `coderoam inbox done <id>`
 - Important update:
-  `rtk ./coderoam/bin/coderoam notify --chat <chat-or-session-alias> --important --text "<message>"`
+  `coderoam notify --chat <chat-or-session-alias> --important --text "<message>"`
 
 Rules:
 
@@ -44,3 +48,9 @@ Rules:
 ```
 
 See `docs/AGENT_RELAY.md` for the shared contract.
+
+`coderoam runbook` also writes a condensed runbook into `CLAUDE.md`,
+`AGENTS.md`, and `GEMINI.md` between the managed
+`<!-- coderoam:relay:start -->` and `<!-- coderoam:relay:end -->` markers; keep
+those markers in place so `coderoam runbook` can update that section without
+touching your own instructions.

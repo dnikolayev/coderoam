@@ -20,21 +20,55 @@ Do not add features for:
 
 ## Development Setup
 
-Use the Go version declared in `go.mod`.
+Use the Go version declared in `go.mod` (currently 1.26.4).
 
 ```sh
 go mod download
-go test ./...
 go build -o bin/coderoam ./cmd/coderoam
+go test ./...
 ```
 
-Useful local checks:
+The Makefile wraps the common workflows:
 
 ```sh
-go test ./...
-go test ./internal/router ./internal/db ./internal/transport/whatsappweb
-bin/coderoam doctor
+make build      # build bin/coderoam
+make test       # go test ./...
+make test-race  # go test -race ./...
+make lint       # static analysis
+make fmt        # format the tree
+make vet        # go vet ./...
+make ci         # the full local CI sequence
 ```
+
+Tests need NO WhatsApp account. The suite uses the fake transport and isolates
+all state in per-test `t.TempDir()` directories, so it never touches your real
+config, profiles, or session files.
+
+To run a single package's tests:
+
+```sh
+go test ./internal/app
+go test ./internal/router ./internal/db ./internal/transport/whatsappweb
+```
+
+To exercise the bridge end to end without WhatsApp, use `coderoam doctor` plus
+the local dry run (`test-route` with the fake transport):
+
+```sh
+bin/coderoam doctor
+bin/coderoam --config /tmp/coderoam.toml init
+bin/coderoam --config /tmp/coderoam.toml runners add default \
+  --mode process-once-json \
+  --command "$(pwd)/bin/echo-runner"
+bin/coderoam --config /tmp/coderoam.toml groups allow "fake-group@g.us" --alias fake
+bin/coderoam --config /tmp/coderoam.toml test-route \
+  --chat "fake-group@g.us" \
+  --sender "fake-sender@s.whatsapp.net" \
+  --text "@bridge ping"
+```
+
+`coderoam doctor` checks the local config, profile database, WhatsApp login
+state, and configured runner commands, and prints what is missing.
 
 Real WhatsApp testing should be manual, low-volume, and performed only with a
 dedicated test account and test group.

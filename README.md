@@ -5,29 +5,17 @@ Run each AI coding session in its own mobile group chat.
 `coderoam` is a local-first bridge between selected WhatsApp groups and local
 CLI coding agents. It lets you continue a coding session from your phone, invite
 other people into the session chat, and keep each work lane isolated in its own
-group.
+group. It works with any CLI agent that accepts a prompt as an argument or on
+stdin; Codex, Claude Code, Gemini, and OpenCode have built-in presets.
 
 Community: [join the Discord server](https://discord.gg/kkV6ZmkRHA) for setup
 help, ideas, and early user feedback.
 
-## New install? Start here
+Security and privacy: read [SECURITY.md](SECURITY.md) and
+[PRIVACY.md](PRIVACY.md) before linking an account. All state is local: the
+config, message database, and WhatsApp session files stay on your machine.
 
-Copy-paste on macOS/Linux with Homebrew:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/dnikolayev/coderoam/main/scripts/install.sh | sh
-```
-
-That installs `coderoam` and prints the short setup guide. Then run
-`coderoam setup` in an interactive terminal: it asks for the messenger, shows
-the WhatsApp QR flow, detects Codex/Claude/Gemini/OpenCode, confirms authorized
-phone numbers before sending invites, and creates the session group.
-The installer uses the latest stable tagged release by default; pass `--head`
-only when you intentionally want the moving `main` branch build.
-
-If you prefer not to run a remote script, read
-[`scripts/install.sh`](scripts/install.sh) and run the Homebrew commands in
-[`docs/HOMEBREW.md`](docs/HOMEBREW.md) manually.
+## Account risk: read this before installing
 
 This project is a local personal automation bridge. It is not affiliated with,
 endorsed by, or authorized by WhatsApp or Meta.
@@ -40,59 +28,54 @@ account and keep usage low-volume.
 Do not use this project for bulk messaging, scraping, spam, surveillance,
 stalkerware, or contacting people without consent.
 
-## Status
+## Prerequisites
 
-Current implementation: v0.1.7 parallel mobile agent sessions.
+- A dedicated WhatsApp account/number for the bridge. Do not link your personal
+  account.
+- Go matching the version in [`go.mod`](go.mod) (currently 1.26.x) - only when
+  building from source. Homebrew and release-archive installs do not need Go.
+- OPTIONAL: the agent CLIs you want to drive from WhatsApp - `codex`, `claude`,
+  `gemini`, `opencode`. None of them is required to install or test the bridge,
+  and any other CLI agent works through the generic runner wrapper.
 
-Project maturity: early MVP. The public API, config shape, database schema, and
-runner protocol can still change before v1.0.
+## Install
 
-Implemented:
+Copy-paste on macOS/Linux with Homebrew:
 
-- Go CLI binary named `coderoam`.
-- Local config with conservative defaults.
-- WhatsApp Web transport using whatsmeow with QR and pair-code login.
-- Group allowlisting.
-- Prefix trigger, default `@bridge`.
-- Process-once text and process-once JSON runners.
-- Persistent JSONL runners.
-- SQLite persistence for profiles, chats, senders, messages, runner invocations, outbox, and audit events.
-- Incoming message deduplication by WhatsApp message ID.
-- Fake transport and `test-route` for local testing without WhatsApp.
-- Kill switch through `coderoam pause`, `resume`, and `kill`.
-- Direct `send --to ... --text ...` helper for one-off status messages from the linked account.
-- Local-confirmed group creation and invite-link sending.
-- Built-in Codex and Claude runner presets, including explicit coding modes.
-- Important-only WhatsApp notification mode for active Codex and Claude runners.
-- Active-session inbox relay for continuing the current Codex chat from WhatsApp without spawning a competing Codex process.
-- One-command active-session group creation for parallel Codex work lanes.
-- Local approval/input queue commands.
-- Cross-platform active-session watcher service definitions.
-- Tagged-release workflow with checksums, SBOM, and optional macOS signing/notarization secrets.
-- Reserved Telegram, Slack, and Google Chat transport names with explicit not-yet-implemented status/errors.
+```sh
+curl -fsSL https://raw.githubusercontent.com/dnikolayev/coderoam/main/scripts/install.sh | sh
+```
 
-Partially implemented:
+That installs `coderoam` and prints the short setup guide. The installer uses
+the latest stable tagged release by default; pass `--head` only when you
+intentionally want the moving `main` branch build.
 
-- Media messages are detected and queued as local metadata/caption text.
-  Downloading media files is disabled by default and available only by explicit
-  local configuration.
+If you prefer not to run a remote script, read
+[`scripts/install.sh`](scripts/install.sh) and run the Homebrew commands in
+[`docs/HOMEBREW.md`](docs/HOMEBREW.md) manually:
 
-Not implemented yet:
+```sh
+brew tap dnikolayev/coderoam https://github.com/dnikolayev/coderoam.git
+brew install dnikolayev/coderoam/coderoam
+```
 
-- Participant management beyond create/invite flows.
-- Encrypted session storage integration with Keychain/libsecret/DPAPI.
-- Full Telegram, Slack, and Google Chat message adapters.
-- Homebrew core submission.
+Binary name convention: Homebrew installs put `coderoam` on PATH; a source
+checkout builds `./bin/coderoam`. Examples in this README use `coderoam`.
 
-## Quick Start
+### Platform support
 
-Prerequisites:
+| Platform                    | Release binaries | Recommended install             |
+| --------------------------- | ---------------- | ------------------------------- |
+| macOS arm64 (Apple Silicon) | yes (tar.gz)     | Homebrew tap or install script  |
+| macOS amd64 (Intel)         | yes (tar.gz)     | Homebrew tap or install script  |
+| Linux amd64                 | yes (tar.gz)     | release archive or source build |
+| Linux arm64                 | yes (tar.gz)     | release archive or source build |
+| Windows amd64               | yes (zip)        | release archive or source build |
 
-- Go matching the version in `go.mod`.
-- A dedicated WhatsApp account/number for the bridge.
-- A local terminal runner, or one of the included example runners.
+Release archives are published for every tagged release with checksums and an
+SBOM. Other platforms build from source with the Go version in `go.mod`.
 
-Build:
+### Build from source
 
 ```sh
 go build -o bin/coderoam ./cmd/coderoam
@@ -103,32 +86,43 @@ go build -o bin/codex-runner ./examples/codex-runner
 go build -o bin/claude-runner ./examples/claude-runner
 ```
 
-Homebrew tap install:
+## First Run
 
 ```sh
-brew tap dnikolayev/coderoam https://github.com/dnikolayev/coderoam.git
-brew install dnikolayev/coderoam/coderoam
 coderoam setup
 ```
 
 `coderoam setup` is the friendly first-run wizard. It configures the selected
 agent, asks which WhatsApp numbers are authorized, requires exact confirmation
 of those numbers, links WhatsApp with QR if needed, and creates the dedicated
-session group.
+session group. Run it in an interactive terminal.
 
-For docs or automation, print the old manual command guide instead:
+After setup, verify the result and start the bridge:
 
 ```sh
-coderoam setup --print --agent codex --workdir /path/to/workspace --session-id codex-session
+coderoam doctor
+coderoam run
 ```
 
-See [docs/HOMEBREW.md](docs/HOMEBREW.md) for the tap fallback, release
-workflow, and Homebrew-core formula path.
+`coderoam doctor` checks the local config, profile database, WhatsApp login
+state, and every configured runner command, and prints what is missing. Run it
+first whenever something does not work.
 
-Initialize local config:
+For docs or automation, print the manual command guide instead of running the
+wizard:
 
 ```sh
-bin/coderoam init
+coderoam setup --print --agent codex --workdir /path/to/workspace --session-id <session-id>
+```
+
+See [docs/SETUP.md](docs/SETUP.md) for the full setup walkthrough and
+[docs/HOMEBREW.md](docs/HOMEBREW.md) for the tap fallback, release workflow,
+and Homebrew-core formula path.
+
+Manual initialization is also available:
+
+```sh
+coderoam init
 ```
 
 `init` is idempotent. If a config already exists, it keeps the existing local
@@ -136,119 +130,146 @@ settings, ensures the profile database exists, and points you back to
 `coderoam setup` or `coderoam runners preset ...`. Use `--force` only when you
 intend to reset local config.
 
-Configure a runner:
+## Configure a Runner
+
+A runner is the local command that receives WhatsApp messages. Add any
+executable directly:
 
 ```sh
-bin/coderoam runners add default \
+coderoam runners add default \
   --mode process-once-json \
   --command /path/to/your/runner
 ```
 
-To connect WhatsApp messages to Codex CLI, use the included `codex-runner` wrapper:
+The easier path is a built-in preset. Read-only presets exist for each
+supported agent CLI:
 
 ```sh
-bin/coderoam runners add default \
-  --mode process-once-json \
-  --command "$(pwd)/bin/codex-runner"
+coderoam runners preset codex --id default --workdir /path/to/workspace
+coderoam runners preset claude --id default --workdir /path/to/workspace
+coderoam runners preset gemini --id gemini --workdir /path/to/workspace
+coderoam runners preset opencode --id opencode --workdir /path/to/workspace
 ```
 
-The easier path is a built-in preset:
+Each agent also has a `*-code` variant (`codex-code`, `claude-code`,
+`gemini-code`, `opencode-code`) that lets the agent edit files in the
+workspace. Coding presets require an explicit `--yes`:
 
 ```sh
-bin/coderoam runners preset codex --id default --workdir /path/to/workspace
-```
-
-To let Codex edit files in that workspace from WhatsApp, explicitly choose the coding preset:
-
-```sh
-bin/coderoam runners preset codex-code \
+coderoam runners preset codex-code \
   --id default \
   --workdir /path/to/workspace \
   --yes
 ```
 
-`codex-code` is the safer default for a dedicated WhatsApp group that should
-keep working when no live watcher is attached. It posts only important updates
-back to WhatsApp by default.
+The `*-code` presets are the safer default for a dedicated WhatsApp group that
+should keep working when no live watcher is attached. They post only important
+updates back to WhatsApp by default.
 
-To continue an existing Codex session from WhatsApp, use `codex-active`.
-This resumes the most recent recorded Codex session and sends each WhatsApp
-message as the next user turn. The active presets only post important updates
-back to WhatsApp, such as plan/checklist changes, blockers, questions that need
-the user, approval/input requests, or final summaries. This direct runner path
+For any other CLI that can accept a prompt as an argument or stdin, use the
+generic `agent` preset (or `agent-code --yes` for agents that may edit files):
+
+```sh
+coderoam runners preset agent \
+  --id my-agent \
+  --workdir /path/to/workspace \
+  --agent-command my-agent-cli \
+  --agent-arg run
+```
+
+Claude presets require the local Claude CLI to be logged in first: run
+`claude` and complete its `/login` flow.
+
+Switch an allowlisted group to a configured runner at any time:
+
+```sh
+coderoam groups set-runner "<group-id>" codex-code
+```
+
+### Codex resume presets
+
+To continue an existing Codex session from WhatsApp, use `codex-active`. This
+resumes the most recent recorded Codex session and sends each WhatsApp message
+as the next user turn. The active presets only post important updates back to
+WhatsApp, such as plan/checklist changes, blockers, questions that need the
+user, approval/input requests, or final summaries. This direct runner path
 waits for Codex to finish a turn, so use the inbox relay below for long active
 sessions that should not block WhatsApp:
 
 ```sh
-bin/coderoam runners preset codex-active \
+coderoam runners preset codex-active \
   --id codex-active \
   --workdir /path/to/workspace \
   --yes
 
-bin/coderoam groups set-runner "1203630xxxxx@g.us" codex-active
+coderoam groups set-runner "<group-id>" codex-active
 ```
 
-For a specific Codex session id:
+For a specific Codex session id, use the `codex-session` preset with
+`--session-id "<codex-session-uuid>"` instead; that avoids accidentally
+resuming another recent Codex session.
 
-```sh
-bin/coderoam runners preset codex-session \
-  --id codex-session \
-  --workdir /path/to/workspace \
-  --session-id "019e..." \
-  --yes
+## Active Sessions: Continue This Session From WhatsApp
 
-bin/coderoam groups set-runner "1203630xxxxx@g.us" codex-session
-```
-
-Use a specific session id if you need to avoid accidentally resuming another
-recent Codex session.
-
-If you installed through Homebrew, replace `bin/coderoam` with `coderoam` in the
-commands below.
-
-For a currently active Codex session, prefer the inbox relay. This stores
-WhatsApp input locally and lets the active Codex session pull it between work
+For a currently active agent session, prefer the inbox relay. This stores
+WhatsApp input locally and lets the active session pull it between work
 chunks:
 
 ```sh
-bin/coderoam active enable "1203630xxxxx@g.us" \
-  --alias codex-session \
-  --session-id codex-session
-bin/coderoam inbox drain --format prompt --session-id codex-session
-bin/coderoam inbox done 1
-bin/coderoam notify --chat codex-session --important --text "Plan updated..."
+coderoam active enable "<group-id>" \
+  --alias <session-id> \
+  --session-id <session-id>
+coderoam inbox drain --format prompt --session-id <session-id>
+coderoam inbox done 1
+coderoam notify --chat <group-alias-or-id> --important --text "Plan updated..."
 ```
 
 Use `inbox watch` only with clients that continuously read watcher stdout while
-idle. For API-style Codex sessions, `inbox drain` is safer because a detached
+idle. For API-style sessions, `inbox drain` is safer because a detached
 watcher can claim a WhatsApp message and make it appear read before the prompt
 reaches the active turn.
 
 To start another parallel work lane, create a dedicated WhatsApp group and bind
-it to a unique active session id:
+it to a unique active session id. One concrete worked example, using Codex:
 
 ```sh
-bin/coderoam active start \
-  --name "Claims QA" \
+coderoam runners preset codex-code --id codex-code --workdir /path/to/workspace --yes
+coderoam active start \
+  --name "Codex Session" \
   --participants "+15550001111" \
-  --alias claims-qa \
-  --session-id claims-qa \
+  --alias codex-session \
+  --session-id codex-session \
   --runner codex-code \
   --yes
+coderoam inbox watch --format prompt --session-id codex-session
 ```
+
+The same pattern works for every agent. Configure that agent's preset, then
+start a lane with its own alias and session id:
+
+```sh
+coderoam runners preset <preset> --id <runner-id> --workdir /path/to/workspace --yes
+coderoam active start \
+  --name "<group name>" \
+  --participants "<your-phone-number>" \
+  --alias <session-id> \
+  --session-id <session-id> \
+  --runner <runner-id> \
+  --yes
+coderoam inbox watch --format prompt --session-id <session-id>
+```
+
+For example, Claude can use `claude-code` with session id `claude-session`
+while Codex uses `codex-code` with `codex-session`, and Gemini or OpenCode
+lanes follow the same shape. All lanes can use the same authorized owner, but
+they must not share the same `active_session_id`; otherwise both clients read
+from the same local inbox lane.
 
 `active start` creates a dedicated WhatsApp group for that session and sends the
 group invite link by direct message to the `--participants` list. Use
-`--invite-to "+15550001111"` to send the link somewhere else. The user must open
-that WhatsApp link to enter the session chat when WhatsApp privacy settings do
-not add them automatically.
-
-Then run a watcher for that session id in the Codex window that should own that
-work lane:
-
-```sh
-bin/coderoam inbox watch --format prompt --session-id claims-qa
-```
+`--invite-to "<your-phone-number>"` to send the link somewhere else. The user
+must open that WhatsApp link to enter the session chat when WhatsApp privacy
+settings do not add them automatically.
 
 `active start` leaves the fallback runner blank by default, so messages stay
 queued for the live watcher. Pass `--runner <id>` only when you want the bridge
@@ -264,7 +285,7 @@ outbox entries. The same alias/session is reactivated only by an explicit local
 `active start`, which creates a fresh WhatsApp group and replaces the archived
 config entry. Groups enabled manually with `active enable` are not
 relay-managed and are not auto-archived unless the owner explicitly adopts an
-existing dedicated relay group with `active enable <chat_id> --managed`.
+existing dedicated relay group with `active enable <group-id> --managed`.
 Archived relay-managed groups cannot be re-enabled; use `active start` to make a
 fresh group.
 
@@ -273,30 +294,16 @@ The relay avoids running `codex exec resume` while another Codex turn is active.
 from the active outbox. Active inbox rows are tagged with a session id so
 multiple active agent sessions do not claim each other's WhatsApp input. For
 active-session groups, the bridge sends a WhatsApp read receipt only after
-`coderoam inbox watch --session-id <id>`,
-`coderoam inbox next --session-id <id>`, or
-`coderoam inbox drain --session-id <id>` claims the message for that active
-agent session. `inbox drain` is the safest turn-boundary path for API-style
-clients because it also surfaces same-session rows that were already claimed by
-a previous watcher. `inbox watch` keeps one exclusive local consumer connected
-per session and emits claimed messages immediately; use it only when that
-consumer continuously reads stdout. Use `--format jsonl` for machine-readable
-local agent integrations. Media-only messages are queued with local
-metadata/captions rather than downloaded by default.
-
-For parallel Codex and Claude chats, configure separate runners and separate
-session ids:
-
-```sh
-bin/coderoam runners preset codex-code --id codex-code --workdir /path/to/workspace --yes
-bin/coderoam active start --name "Codex Session" --participants "+15550001111" --alias codex-session --session-id codex-session --runner codex-code --yes
-
-bin/coderoam runners preset claude-code --id claude-code --workdir /path/to/workspace --yes
-bin/coderoam active start --name "Claude Session" --participants "+15550001111" --alias claude-session --session-id claude-session --runner claude-code --yes
-```
-
-Both chats can use the same authorized owner, but they must not share the same
-`active_session_id`; otherwise both clients read from the same local inbox lane.
+`coderoam inbox watch --session-id <session-id>`,
+`coderoam inbox next --session-id <session-id>`, or
+`coderoam inbox drain --session-id <session-id>` claims the message for that
+active agent session. `inbox drain` is the safest turn-boundary path for
+API-style clients because it also surfaces same-session rows that were already
+claimed by a previous watcher. `inbox watch` keeps one exclusive local consumer
+connected per session and emits claimed messages immediately; use it only when
+that consumer continuously reads stdout. Use `--format jsonl` for
+machine-readable local agent integrations. Media-only messages are queued with
+local metadata/captions rather than downloaded by default.
 
 When no live watcher is connected and the active-session group has a safe
 fallback runner, the bridge waits briefly for related WhatsApp messages and
@@ -314,6 +321,43 @@ is queued without a live watcher or when fallback starts, and suppresses routine
 "received" messages for healthy live watchers. Use `verbose` to restore
 detailed `Received #...` messages, or `off` to suppress active-session
 acknowledgements.
+
+If no live watcher is connected and the active-session group has a safe runner
+configured, the daemon uses that runner as an automatic fallback. Do not use an
+active Codex resume runner, such as `codex-active` with `CODEX_RUNNER_RESUME`,
+or a runner pinned to the same live session, such as `codex-session` with
+`CODEX_RUNNER_SESSION_ID`, as automatic fallback: it can block the bridge or
+claim a WhatsApp row without surfacing it in the open window. These runners stay
+queued for `inbox watch`, `inbox next`, or `inbox drain` instead. Use
+`codex-code` or another non-pinned runner when you want automatic background
+WhatsApp replies.
+
+To inspect the last routing decision for a chat, run:
+
+```sh
+coderoam explain-last --chat <group-alias-or-id>
+```
+
+This reports whether the last message was queued, ignored, blocked, batched, or
+sent to a fallback runner, with redacted sender/chat identifiers.
+
+Reusable client instructions live in:
+
+- `docs/SETUP.md`
+- `docs/HOMEBREW.md`
+- `docs/AGENT_RELAY.md`
+- `docs/agents/codex.md`
+- `docs/agents/claude.md`
+- `docs/agents/gemini.md`
+- `docs/agents/opencode.md`
+- `docs/agents/generic.md`
+- `skills/whatsapp-relay/`
+
+`coderoam setup --agent auto --workdir /path/to/workspace` detects installed
+client commands (`codex`, `claude`, `gemini`, `opencode`) and prints the matching
+`runners preset` command plus the instruction file to copy into that client.
+
+## Media: Voice Notes, Images, Screenshots
 
 To let agents inspect voice notes or other media, explicitly enable local media
 download:
@@ -347,93 +391,6 @@ as a fallback. Set `CODEX_RUNNER_AUDIO_TRANSCRIBE_COMMAND` or
 the prompt as `transcript:`. Agents must transcribe voice memos before treating
 audio content as instructions or slash commands; if transcription is unavailable,
 ask for text instead.
-
-If no live watcher is connected and the active-session group has a safe runner
-configured, the daemon uses that runner as an automatic fallback. Do not use an
-active Codex resume runner, such as `codex-active` with `CODEX_RUNNER_RESUME`,
-or a runner pinned to the same live session, such as `codex-session` with
-`CODEX_RUNNER_SESSION_ID`, as automatic fallback: it can block the bridge or
-claim a WhatsApp row without surfacing it in the open window. These runners stay
-queued for `inbox watch`, `inbox next`, or `inbox drain` instead. Use
-`codex-code` or another non-pinned runner when you want automatic background
-WhatsApp replies.
-
-To inspect the last routing decision for a chat, run:
-
-```sh
-bin/coderoam explain-last --chat codex-session
-```
-
-This reports whether the last message was queued, ignored, blocked, batched, or
-sent to a fallback runner, with redacted sender/chat identifiers.
-
-Reusable client instructions live in:
-
-- `docs/SETUP.md`
-- `docs/HOMEBREW.md`
-- `docs/AGENT_RELAY.md`
-- `docs/agents/codex.md`
-- `docs/agents/claude.md`
-- `docs/agents/gemini.md`
-- `docs/agents/opencode.md`
-- `docs/agents/generic.md`
-- `skills/whatsapp-relay/`
-
-`coderoam setup --agent auto --workdir /path/to/workspace` detects installed
-client commands (`codex`, `claude`, `gemini`, `opencode`) and prints the matching
-`runners preset` command plus the instruction file to copy into that client.
-
-Claude Code is supported through `claude-runner`:
-
-```sh
-bin/coderoam runners preset claude --id default --workdir /path/to/workspace
-```
-
-To let Claude edit files in that workspace from WhatsApp:
-
-```sh
-bin/coderoam runners preset claude-code \
-  --id default \
-  --workdir /path/to/workspace \
-  --yes
-```
-
-Switch the allowlisted group to a configured runner:
-
-```sh
-bin/coderoam groups set-runner "1203630xxxxx@g.us" codex-code
-bin/coderoam groups set-runner "1203630xxxxx@g.us" claude-code
-```
-
-Claude support requires the local Claude CLI to be logged in first:
-
-```sh
-claude
-```
-
-Then complete Claude's `/login` flow.
-
-OpenCode, Gemini, and other CLI agents are supported through the generic
-`agent-runner` wrapper. Built-in presets:
-
-```sh
-bin/coderoam runners preset opencode --id opencode --workdir /path/to/workspace
-bin/coderoam runners preset opencode-code --id opencode-code --workdir /path/to/workspace --yes
-bin/coderoam runners preset gemini --id gemini --workdir /path/to/workspace
-bin/coderoam runners preset gemini-code --id gemini-code --workdir /path/to/workspace --yes
-```
-
-For any other CLI that can accept a prompt as an argument or stdin:
-
-```sh
-bin/coderoam runners preset agent \
-  --id my-agent \
-  --workdir /path/to/workspace \
-  --agent-command my-agent-cli \
-  --agent-arg run
-```
-
-Use `agent-code --yes` only for agents that may edit files.
 
 ## Important-only notifications
 
@@ -494,14 +451,15 @@ Optional runner environment variables:
 ## Active WhatsApp Slash Commands
 
 When using active-session mode, WhatsApp messages are queued into the local
-inbox for the currently active Codex session. Slash commands such as `/goal ...`
+inbox for the currently active agent session. Slash commands such as `/goal ...`
 are not executed by the daemon itself. They are highlighted by
 `coderoam inbox next --format prompt` and
-`coderoam inbox drain --format prompt --session-id <id>` so the active agent
-session treats them as explicit user commands after it claims the inbox row.
+`coderoam inbox drain --format prompt --session-id <session-id>` so the active
+agent session treats them as explicit user commands after it claims the inbox
+row.
 
-This avoids running a second competing Codex process while one Codex turn is
-already active.
+This avoids running a second competing agent process while one turn is already
+active.
 
 For coding or goal-style workflows, enable sender allowlisting so only trusted
 WhatsApp senders can instruct local agents. The setup wizard enables this by
@@ -526,10 +484,12 @@ If a voice memo or audio attachment may contain a slash command, the active
 agent must transcribe the audio first and only apply the command after the
 transcript is available and the sender is authorized.
 
-Login with WhatsApp:
+## WhatsApp Login
+
+`coderoam setup` handles login for you. To log in manually:
 
 ```sh
-bin/coderoam auth login --profile bot --qr
+coderoam auth login --profile bot --qr
 ```
 
 By default, QR login also writes and opens a PNG image:
@@ -541,45 +501,36 @@ By default, QR login also writes and opens a PNG image:
 You can choose the QR image path or disable auto-open:
 
 ```sh
-bin/coderoam auth login --qr --qr-image /tmp/coderoam-qr.png --open-qr=false
+coderoam auth login --qr --qr-image /tmp/coderoam-qr.png --open-qr=false
 ```
 
 Pair-code login is also available if your WhatsApp account supports it:
 
 ```sh
-bin/coderoam auth login --pair-code "+380XXXXXXXXX"
+coderoam auth login --pair-code "<your-phone-number>"
 ```
 
-If WhatsApp reports `401: logged out from another device`, reset the local
-session before linking again:
-
-```sh
-bin/coderoam auth reset --yes
-bin/coderoam auth login --qr
-```
-
-This deletes only the WhatsApp session files for the active profile. It does not
-delete the app config, allowed groups, runner config, or message database.
+## Groups
 
 List groups:
 
 ```sh
-bin/coderoam chats list --groups
+coderoam chats list --groups
 ```
 
 Allow one group:
 
 ```sh
-bin/coderoam groups allow "1203630xxxxx@g.us" --alias "test-group"
+coderoam groups allow "<group-id>" --alias "test-group"
 ```
 
 If the bridge account is not in any group yet, you can create a small local test
 group from the terminal:
 
 ```sh
-bin/coderoam groups create \
+coderoam groups create \
   --name "Codex Bridge" \
-  --participants "+380506171414" \
+  --participants "<your-phone-number>" \
   --alias "codex" \
   --runner default \
   --yes
@@ -592,13 +543,13 @@ If WhatsApp creates the group but cannot add the participant because of privacy
 settings, send an invite link:
 
 ```sh
-bin/coderoam groups send-invite "1203630xxxxx@g.us" --to "+380506171414"
+coderoam groups send-invite "<group-id>" --to "<your-phone-number>"
 ```
 
 Run the bridge:
 
 ```sh
-bin/coderoam run
+coderoam run
 ```
 
 When someone in the allowlisted group sends:
@@ -614,14 +565,14 @@ the bridge sends `ping` to the configured local runner and posts the runner repl
 The fake transport allows testing the route without WhatsApp:
 
 ```sh
-bin/coderoam --config /tmp/coderoam.toml init
-bin/coderoam --config /tmp/coderoam.toml runners add default \
+coderoam --config /tmp/coderoam.toml init
+coderoam --config /tmp/coderoam.toml runners add default \
   --mode process-once-json \
   --command "$(pwd)/bin/echo-runner"
-bin/coderoam --config /tmp/coderoam.toml groups allow "fake-group@g.us" --alias fake
-bin/coderoam --config /tmp/coderoam.toml test-route \
+coderoam --config /tmp/coderoam.toml groups allow "fake-group@g.us" --alias fake
+coderoam --config /tmp/coderoam.toml test-route \
   --chat "fake-group@g.us" \
-  --sender "380506171414@s.whatsapp.net" \
+  --sender "fake-sender@s.whatsapp.net" \
   --text "@bridge ping"
 ```
 
@@ -635,8 +586,8 @@ For `process-once-json`, the runner receives one JSON object on stdin:
   "request_id": "req_...",
   "profile_id": "bot",
   "text": "ping",
-  "chat_id": "1203630xxxxx@g.us",
-  "sender_id": "380506171414@s.whatsapp.net"
+  "chat_id": "<group-id>",
+  "sender_id": "<sender-id>"
 }
 ```
 
@@ -701,10 +652,10 @@ same runner without requiring the normal trigger prefix.
 Local approval controls:
 
 ```sh
-bin/coderoam approvals list
-bin/coderoam approvals show <id>
-bin/coderoam approvals approve <id>
-bin/coderoam approvals reject <id>
+coderoam approvals list
+coderoam approvals show <id>
+coderoam approvals approve <id>
+coderoam approvals reject <id>
 ```
 
 ## Sending a One-Off Message
@@ -712,7 +663,7 @@ bin/coderoam approvals reject <id>
 After WhatsApp login succeeds, this sends from the linked bridge account:
 
 ```sh
-bin/coderoam send --to "+380506171414" --text "coderoam is ready"
+coderoam send --to "<your-phone-number>" --text "coderoam is ready"
 ```
 
 ## Storage
@@ -725,6 +676,95 @@ Default paths:
 - macOS logs: `~/Library/Logs/coderoam/coderoam.log`
 
 WhatsApp session material is stored outside the repository. Do not commit profile data or session databases.
+
+## Troubleshooting
+
+**The QR code expired or login timed out.** `coderoam auth login --qr` keeps
+the QR login scannable for 5 minutes, requesting fresh codes as WhatsApp
+rotates each one roughly every 20 seconds. If the window passes, run the
+command again and scan promptly from WhatsApp > Settings > Linked Devices.
+
+**Runner command not found.** `coderoam doctor` prints `runner.<id>: command
+not found` with the exact executable it looked for. Install that agent CLI
+(`codex`, `claude`, `gemini`, `opencode`, or your own), or reconfigure the
+runner with `coderoam runners preset ...`/`coderoam runners add ...` pointing
+at an existing command. If `coderoam` itself is not found, remember the binary
+name convention above: source checkouts run `./bin/coderoam`.
+
+**Where is my data stored?** Everything stays local; see
+[Storage](#storage) for the per-OS config, database, session, and log paths.
+
+**How do I unlink or log out the WhatsApp session?** Run `coderoam auth
+logout`, or remove the linked device from the phone in WhatsApp > Settings >
+Linked Devices. If WhatsApp reports `401: logged out from another device`,
+reset the local session files before linking again:
+
+```sh
+coderoam auth reset --yes
+coderoam auth login --qr
+```
+
+This deletes only the WhatsApp session files for the active profile. It does
+not delete the app config, allowed groups, runner config, or message database.
+
+**`coderoam setup` hangs.** The wizard is interactive and waits for input; run
+it in a real terminal, not through a script or non-interactive shell. If it
+sits on the QR step, the 5-minute login window may have passed - rerun and
+scan promptly. `coderoam setup --print ...` prints the manual commands without
+any interaction, and `coderoam doctor` shows which setup step is incomplete.
+
+**"a coderoam daemon is already running".** Only one `coderoam run` daemon may
+own the messenger connection per machine; every agent session is a consumer of
+that daemon, so this message usually means everything is fine. Use
+`coderoam run --takeover` only to deliberately replace the running daemon.
+
+**Something else?** `coderoam doctor`, `coderoam status`, `coderoam health`,
+and `coderoam logs tail` are the first diagnostics to run. See
+[SUPPORT.md](SUPPORT.md) for what to include when asking for help.
+
+## Status
+
+Current implementation: v0.1.7 parallel mobile agent sessions.
+
+Project maturity: early MVP. The public API, config shape, database schema, and
+runner protocol can still change before v1.0.
+
+Implemented:
+
+- Go CLI binary named `coderoam`.
+- Local config with conservative defaults.
+- WhatsApp Web transport using whatsmeow with QR and pair-code login.
+- Group allowlisting.
+- Prefix trigger, default `@bridge`.
+- Process-once text and process-once JSON runners.
+- Persistent JSONL runners.
+- SQLite persistence for profiles, chats, senders, messages, runner invocations, outbox, and audit events.
+- Incoming message deduplication by WhatsApp message ID.
+- Fake transport and `test-route` for local testing without WhatsApp.
+- Kill switch through `coderoam pause`, `resume`, and `kill`.
+- Direct `send --to ... --text ...` helper for one-off status messages from the linked account.
+- Local-confirmed group creation and invite-link sending.
+- Built-in Codex and Claude runner presets, including explicit coding modes.
+- Important-only WhatsApp notification mode for active Codex and Claude runners.
+- Active-session inbox relay for continuing the current Codex chat from WhatsApp without spawning a competing Codex process.
+- One-command active-session group creation for parallel Codex work lanes.
+- Local approval/input queue commands.
+- Cross-platform active-session watcher service definitions.
+- Tagged-release workflow with checksums, SBOM, and optional macOS signing/notarization secrets.
+- Reserved Telegram, Slack, and Google Chat transport names with explicit not-yet-implemented status/errors.
+
+Partially implemented:
+
+- Media messages are detected and queued as local metadata/caption text.
+  Downloading media files is disabled by default and available only by explicit
+  local configuration.
+
+Not implemented yet:
+
+- Participant management beyond create/invite flows.
+- Encrypted session storage integration with Keychain/libsecret/DPAPI.
+- Full Telegram, Slack, and Google Chat message adapters.
+- Homebrew core submission.
 
 ## Open-Source Readiness
 

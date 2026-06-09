@@ -31,3 +31,9 @@ diagnostics/
 .env
 .env.*
 !.env.example
+
+# Agent runbooks ("coderoam setup" / "coderoam runbook" generate these
+# per-workspace; keep local copies out of commits)
+/CLAUDE.md
+/AGENTS.md
+/GEMINI.md

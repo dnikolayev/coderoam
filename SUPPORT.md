@@ -10,6 +10,10 @@ chat IDs, or private message contents in Discord.
 
 ## Before Asking For Help
 
+Check the Troubleshooting section in `README.md` first - it covers QR login
+timeouts, missing runner commands, storage paths, unlinking the WhatsApp
+session, and the "daemon is already running" message.
+
 Run:
 
 ```sh

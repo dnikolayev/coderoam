@@ -3,6 +3,15 @@
 This document defines how local AI clients should consume WhatsApp input from
 `coderoam` and send important updates back to the WhatsApp group.
 
+Commands below use `coderoam` as installed by Homebrew; from a source checkout,
+use `./bin/coderoam` instead.
+
+`coderoam runbook` writes a condensed version of this contract into `CLAUDE.md`,
+`AGENTS.md`, and `GEMINI.md` between the managed
+`<!-- coderoam:relay:start -->` and `<!-- coderoam:relay:end -->` markers; keep
+those markers in place so `coderoam runbook` can update that section without
+touching surrounding instructions.
+
 ## Roles
 
 - `coderoam run` owns the WhatsApp connection.
@@ -29,19 +38,19 @@ interactive `coderoam setup` wizard.
 Use these commands from the workspace that owns the bridge:
 
 ```sh
-rtk ./coderoam/bin/coderoam active status
-rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id <session-id>
-rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id <session-id>
-rtk ./coderoam/bin/coderoam inbox done <id>
-rtk ./coderoam/bin/coderoam notify --chat <chat-or-session-alias> --important --text "<message>"
+coderoam active status
+coderoam inbox drain --format prompt --session-id <session-id>
+coderoam inbox watch --format prompt --session-id <session-id>
+coderoam inbox done <id>
+coderoam notify --chat <chat-or-session-alias> --important --text "<message>"
 ```
 
 For a long-lived local session, install the watcher as a user service:
 
 ```sh
-rtk ./coderoam/bin/coderoam service install --session-id <session-id> --profile bot
-rtk ./coderoam/bin/coderoam service start --session-id <session-id> --profile bot
-rtk ./coderoam/bin/coderoam service status --session-id <session-id> --profile bot
+coderoam service install --session-id <session-id> --profile bot
+coderoam service start --session-id <session-id> --profile bot
+coderoam service status --session-id <session-id> --profile bot
 ```
 
 The service runs the same watcher path with takeover and restart backoff. Add
@@ -73,7 +82,7 @@ Each active-session group is scoped by its own `active_session_id`. To create a
 new WhatsApp group for a separate work lane, run:
 
 ```sh
-rtk ./coderoam/bin/coderoam active start \
+coderoam active start \
   --name "Claims QA" \
   --participants "+15550001111" \
   --alias claims-qa \
@@ -89,7 +98,7 @@ who should open the WhatsApp link differs from the initial participant list.
 Then start a separate client or terminal watcher with that session id:
 
 ```sh
-rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id claims-qa
+coderoam inbox watch --format prompt --session-id claims-qa
 ```
 
 Pass `--runner <id>` when this group should keep working through a configured

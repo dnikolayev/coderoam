@@ -3,6 +3,9 @@
 Use this as the relay setup text for Codex sessions that should consume
 WhatsApp input through `coderoam`.
 
+Commands below use `coderoam` as installed by Homebrew; from a source checkout,
+use `./bin/coderoam` instead.
+
 ```md
 ## Active WhatsApp Relay
 
@@ -16,15 +19,15 @@ not use `--force` unless the owner explicitly asks to reset local config.
 At the start of every Codex turn:
 
 1. Check relay status:
-   `rtk ./coderoam/bin/coderoam active status`
+   `coderoam active status`
 2. Pick this client's session id from the delivered WhatsApp prompt, or from
    the row in `active status` that belongs to this Codex group. Do not reuse
    another client's session id.
 3. Drain pending input:
-   `rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id <session-id>`
+   `coderoam inbox drain --format prompt --session-id <session-id>`
 4. Treat drained prompt blocks as user input.
 5. After handling each claimed inbox item:
-   `rtk ./coderoam/bin/coderoam inbox done <id>`
+   `coderoam inbox done <id>`
 
 Do not leave `inbox watch` running in a Codex API/tool session unless this
 Codex client can continuously consume that process output while idle. A watcher
@@ -49,7 +52,7 @@ daemon. Do not mark it done manually unless you claimed another inbox row.
 Send WhatsApp updates only for plan/checklist changes, blockers, questions for
 the owner, or final summaries:
 
-`rtk ./coderoam/bin/coderoam notify --chat <chat-or-session-alias> --important --text "<message>"`
+`coderoam notify --chat <chat-or-session-alias> --important --text "<message>"`
 
 If the runner prompt tells you to return an ignore marker and there is no
 important WhatsApp update, return exactly:
@@ -58,3 +61,8 @@ important WhatsApp update, return exactly:
 ```
 
 See `docs/AGENT_RELAY.md` for the shared contract.
+
+`coderoam runbook` also writes a condensed runbook into `AGENTS.md` between the
+managed `<!-- coderoam:relay:start -->` and `<!-- coderoam:relay:end -->`
+markers; keep those markers in place so `coderoam runbook` can update that
+section without touching your own instructions.
