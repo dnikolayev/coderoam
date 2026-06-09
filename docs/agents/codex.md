@@ -12,13 +12,18 @@ At the start of every Codex turn:
 
 1. Check relay status:
    `rtk ./coderoam/bin/coderoam active status`
-2. If a persistent terminal/session is available, start or keep this watcher:
-   `rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id codex-session`
-3. If no watcher is available, drain pending input:
+2. Drain pending input:
    `rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id codex-session`
-4. Treat watched or drained prompt blocks as user input.
-5. After handling each claimed inbox item:
+3. Treat drained prompt blocks as user input.
+4. After handling each claimed inbox item:
    `rtk ./coderoam/bin/coderoam inbox done <id>`
+
+Do not leave `inbox watch` running in a Codex API/tool session unless this
+Codex client can continuously consume that process output while idle. A watcher
+that is running but unread can claim WhatsApp rows and make them appear read
+before the prompt reaches the active Codex turn. Use `drain` at turn start for
+this environment. If `drain` reports an already claimed row, handle it and mark
+it done, or requeue it if another consumer should handle it.
 
 For voice memos or audio attachments, transcribe the audio first. Only apply
 instructions or slash commands from the audio after the transcript is available

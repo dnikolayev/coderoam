@@ -11,13 +11,14 @@ Start each work session by checking:
 
 `rtk ./coderoam/bin/coderoam active status`
 
-If Claude Code can keep a long-running terminal command open, prefer:
-
-`rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id codex-session`
-
-Otherwise, drain at the start of a turn and before final handoff:
+Drain at the start of a turn and before final handoff:
 
 `rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id codex-session`
+
+Use a watcher only when Claude Code can keep a long-running terminal command
+open and continuously read stdout while idle:
+
+`rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id codex-session`
 
 Treat watched or drained prompt blocks as user input. After handling each
 claimed inbox item, run:

@@ -197,10 +197,15 @@ chunks:
 bin/coderoam active enable "1203630xxxxx@g.us" \
   --alias codex-session \
   --session-id codex-session
-bin/coderoam inbox watch --format prompt --session-id codex-session
+bin/coderoam inbox drain --format prompt --session-id codex-session
 bin/coderoam inbox done 1
 bin/coderoam notify --chat codex-session --important --text "Plan updated..."
 ```
+
+Use `inbox watch` only with clients that continuously read watcher stdout while
+idle. For API-style Codex sessions, `inbox drain` is safer because a detached
+watcher can claim a WhatsApp message and make it appear read before the prompt
+reaches the active turn.
 
 To start another parallel work lane, create a dedicated WhatsApp group and bind
 it to a unique active session id:
@@ -253,10 +258,13 @@ active-session groups, the bridge sends a WhatsApp read receipt only after
 `coderoam inbox watch --session-id <id>`,
 `coderoam inbox next --session-id <id>`, or
 `coderoam inbox drain --session-id <id>` claims the message for that active
-agent session. `inbox watch` keeps one exclusive local consumer connected per
-session and emits claimed messages immediately; use `--format jsonl` for
-machine-readable local agent integrations. Media-only messages are queued with
-local metadata/captions rather than downloaded by default.
+agent session. `inbox drain` is the safest turn-boundary path for API-style
+clients because it also surfaces same-session rows that were already claimed by
+a previous watcher. `inbox watch` keeps one exclusive local consumer connected
+per session and emits claimed messages immediately; use it only when that
+consumer continuously reads stdout. Use `--format jsonl` for machine-readable
+local agent integrations. Media-only messages are queued with local
+metadata/captions rather than downloaded by default.
 
 When no live watcher is connected and the active-session group has a safe
 fallback runner, the bridge waits briefly for related WhatsApp messages and
@@ -457,7 +465,7 @@ When using active-session mode, WhatsApp messages are queued into the local
 inbox for the currently active Codex session. Slash commands such as `/goal ...`
 are not executed by the daemon itself. They are highlighted by
 `coderoam inbox next --format prompt` and
-`coderoam inbox watch --format prompt --session-id <id>` so the active agent
+`coderoam inbox drain --format prompt --session-id <id>` so the active agent
 session treats them as explicit user commands after it claims the inbox row.
 
 This avoids running a second competing Codex process while one Codex turn is
@@ -644,10 +652,11 @@ agent needs the owner to select from options:
 ```
 
 The bridge stores a pending interaction and sends a numbered WhatsApp menu.
-The owner can reply with `1`, `2`, the option text, or clear natural language
-such as `privacy review` or `CI please`; that answer is routed back to the same
-runner without requiring the normal trigger prefix. If the answer matches more
-than one option, the bridge asks a narrower follow-up instead of guessing.
+Those numbers are shortcuts, not a forced UI. The owner can reply with `1`,
+`2`, the option text, clear natural language such as `privacy review` or `CI
+please`, or any custom free-text answer. Voice notes work too when local media
+download and transcription are enabled: the transcript is routed back to the
+same runner without requiring the normal trigger prefix.
 
 Local approval controls:
 

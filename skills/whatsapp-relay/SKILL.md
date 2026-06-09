@@ -13,16 +13,22 @@ At the start of a normal Codex turn in a relay-enabled workspace:
 
 1. Check relay status:
    `rtk ./coderoam/bin/coderoam active status`
-2. If no persistent watcher is available, drain pending input:
+2. Drain pending input:
    `rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id codex-session`
 3. Treat any drained prompt blocks as user input.
 4. After handling each claimed row:
    `rtk ./coderoam/bin/coderoam inbox done <id>`
 
-For long work, if the environment supports a persistent process that Codex can
-read, prefer:
+Use a watcher only when the environment can continuously read its stdout while
+idle:
 
 `rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id codex-session`
+
+Do not leave a watcher running in API-style Codex sessions that only read tool
+output during explicit tool calls. It can claim a WhatsApp row and trigger a
+read receipt before the prompt is surfaced to the active turn. In those
+environments, the turn-start `drain` path is the main path; it also surfaces
+same-session claimed rows if a previous watcher already claimed one.
 
 ## Runner-Delivered Turns
 

@@ -12,10 +12,10 @@ Required commands:
 
 - Status:
   `rtk ./coderoam/bin/coderoam active status`
-- Live watch, when persistent stdout can be consumed:
-  `rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id codex-session`
-- Drain fallback:
+- Drain at turn start:
   `rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id codex-session`
+- Live watch, only when persistent stdout is continuously consumed:
+  `rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id codex-session`
 - Mark handled:
   `rtk ./coderoam/bin/coderoam inbox done <id>`
 - Important update:
@@ -23,7 +23,8 @@ Required commands:
 
 Rules:
 
-- Prefer live watch; use drain when watching is unavailable.
+- Prefer drain for API-style sessions. Use live watch only when the client keeps
+  reading stdout while idle.
 - Treat watched or drained rows as user messages.
 - Mark every claimed row done after handling.
 - For voice memos or audio attachments, transcribe first; only apply commands

@@ -11,14 +11,14 @@ At session start, check:
 
 `rtk ./coderoam/bin/coderoam active status`
 
-Use a live watcher when Gemini can keep a long-running local command open and
-read stdout:
-
-`rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id codex-session`
-
-If no live watcher is available, drain pending input at turn start and handoff:
+Drain pending input at turn start and handoff:
 
 `rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id codex-session`
+
+Use a live watcher only when Gemini can keep a long-running local command open
+and continuously read stdout while idle:
+
+`rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id codex-session`
 
 Treat watched or drained inbox prompt blocks as user input. After handling a
 claimed inbox row:

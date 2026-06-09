@@ -12,14 +12,14 @@ Check status first:
 
 `rtk ./coderoam/bin/coderoam active status`
 
-Prefer a live watcher when the client can keep a persistent local command open:
-
-`rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id codex-session`
-
-If persistent watching is unavailable, drain pending input at the start of the
-turn and before final handoff:
+Drain pending input at the start of the turn and before final handoff:
 
 `rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id codex-session`
+
+Use a live watcher only when the client can keep a persistent local command open
+and continuously read stdout while idle:
+
+`rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id codex-session`
 
 Treat watched or drained rows as user messages. After handling each claimed row:
 

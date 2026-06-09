@@ -7,8 +7,12 @@ This document defines how local AI clients should consume WhatsApp input from
 
 - `coderoam run` owns the WhatsApp connection.
 - Active-session inbox rows are scoped by `active_session_id`.
-- A live watcher is the preferred main path when the client can keep a process
-  open and read its output.
+- A live watcher is the preferred main path only when the client can keep a
+  process open and continuously read its output.
+- API-style sessions that only read command output during tool calls should use
+  `inbox drain` at turn boundaries instead of leaving a detached watcher
+  running. A detached watcher can claim a row, send the WhatsApp read receipt,
+  and leave the prompt unseen until someone polls its stdout.
 - Without a live watcher, active-session rows may fall back to a configured
   non-pinned runner. Runners pinned to the same live session stay queued until
   the client drains them.
@@ -19,8 +23,8 @@ Use these commands from the workspace that owns the bridge:
 
 ```sh
 rtk ./coderoam/bin/coderoam active status
-rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id codex-session
 rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id codex-session
+rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id codex-session
 rtk ./coderoam/bin/coderoam inbox done <id>
 rtk ./coderoam/bin/coderoam notify --chat codex-session --important --text "<message>"
 ```
@@ -39,10 +43,13 @@ scheduled task command.
 
 Rules:
 
-- Prefer `inbox watch` if the client can keep a persistent process open and
-  consume stdout.
+- Prefer `inbox watch` only if the client can keep a persistent process open
+  and consume stdout continuously.
 - Use `inbox drain` at turn start and handoff points when no persistent watcher
-  is available.
+  is available, or when the client cannot read watcher output while idle.
+- `inbox drain` prints unread rows first. If no unread rows exist but this
+  session already has claimed rows, it prints those rows too so a watcher-claimed
+  message cannot stay hidden behind `No pending WhatsApp inbox messages.`
 - Treat watched or drained prompt blocks as user input.
 - Mark every claimed inbox row done after handling it.
 - Normal `inbox next`, `drain`, and `watch` reads do not auto-recover old
@@ -128,19 +135,20 @@ bridge stores a pending interaction and sends a WhatsApp menu such as:
 ```text
 How should I continue?
 
-Reply with one option:
+Reply with a number, option text, or your own answer:
 1. Plan first
 2. Apply changes
 3. Stop
 ```
 
-The owner may reply with the number, the option text, or clear natural language
-such as `privacy review` or `CI please`. While the interaction is pending, that
-reply bypasses the normal trigger prefix and is sent back through the same
-route. In active-session mode, the selected answer is queued for the live client
-session. If a reply matches multiple options, the bridge asks a narrower
-follow-up instead of guessing. Native WhatsApp polls/buttons are optional future
-UI; text selectors remain the reliable fallback.
+The owner may reply with the number, the option text, clear natural language
+such as `privacy review` or `CI please`, or any custom free-text answer. While
+the interaction is pending, that reply bypasses the normal trigger prefix and is
+sent back through the same route. In active-session mode, the selected or custom
+answer is queued for the live client session. Voice-note answers are supported
+when local media download and transcription are enabled; the transcript becomes
+the answer. Native WhatsApp polls/buttons are optional future UI; plain text and
+voice remain the reliable fallback.
 
 The same queue is available locally:
 

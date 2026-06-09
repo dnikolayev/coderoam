@@ -33,16 +33,26 @@ invite link to `--participants` by default. The user opens that link to join the
 session chat when WhatsApp privacy settings do not add them automatically. Pass
 `--invite-to` to DM the link to a different phone number or WhatsApp JID.
 
-In the agent terminal that should own the session:
+In an API-style Codex session, drain the inbox at turn start:
+
+```sh
+coderoam inbox drain --format prompt --session-id codex-session
+```
+
+In a terminal client that continuously reads command output, you can instead run
+a watcher:
 
 ```sh
 coderoam inbox watch --format prompt --session-id codex-session
 ```
 
 When someone sends a message in the session group, coderoam stores it in the
-session inbox. The watcher prints it for the active agent to handle.
+session inbox. `drain` prints unread rows and any same-session row that was
+already claimed by a previous watcher. `watch` prints rows immediately only when
+the client keeps reading stdout.
 
-To keep that watcher alive across terminal restarts, install an OS user service:
+To keep a watcher alive across terminal restarts for a continuously-reading
+client, install an OS user service:
 
 ```sh
 coderoam service install --session-id codex-session --profile bot
