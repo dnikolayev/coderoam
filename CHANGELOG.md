@@ -6,6 +6,20 @@ protocols.
 
 ## Unreleased
 
+## v0.1.11 - 2026-06-09
+
+### Fixed
+
+- Router config reloads now use immutable snapshots, so a reload during
+  WhatsApp message handling cannot mix Codex and Claude group/runner settings
+  inside one message path.
+
+### Tests
+
+- Added race coverage for concurrent router config reloads and message handling.
+- Parallelized safe unit tests to catch accidental shared state across agent
+  client sessions sooner.
+
 ## v0.1.10 - 2026-06-09
 
 ### Fixed
