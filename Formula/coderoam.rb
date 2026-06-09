@@ -1,8 +1,8 @@
 class Coderoam < Formula
   desc "Run each AI coding session in its own mobile group chat"
   homepage "https://github.com/dnikolayev/coderoam"
-  url "https://github.com/dnikolayev/coderoam/archive/refs/tags/v0.1.4.tar.gz"
-  sha256 "1b0a2fab5cfcd630133e17411d8657672b04563b22d263745db4c6660e944002"
+  url "https://github.com/dnikolayev/coderoam/archive/refs/tags/v0.1.5.tar.gz"
+  sha256 "4c7975f685cf71248178f09a6e11b7519468439d3a074c01896e9f25aedc55f5"
   license all_of: ["MIT", "GPL-3.0-only"]
 
   head "https://github.com/dnikolayev/coderoam.git", branch: "main"
@@ -38,6 +38,6 @@ class Coderoam < Formula
 
   test do
     assert_match "coderoam", shell_output("#{bin}/coderoam version")
-    assert_match "Quick WhatsApp setup", shell_output("#{bin}/coderoam setup")
+    assert_match "Quick WhatsApp setup", shell_output("#{bin}/coderoam setup --print")
   end
 end
