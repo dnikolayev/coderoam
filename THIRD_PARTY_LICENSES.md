@@ -29,7 +29,6 @@ released dependency graph.
 
 | Module | Version | License | Local license file |
 | --- | --- | --- | --- |
-| `github.com/mattn/go-sqlite3` | `v1.14.45` | MIT | `LICENSE` |
 | `github.com/mdp/qrterminal/v3` | `v3.2.1` | MIT | `LICENSE` |
 | `github.com/pelletier/go-toml/v2` | `v2.3.1` | MIT | `LICENSE` |
 | `github.com/spf13/cobra` | `v1.10.2` | Apache-2.0 | `LICENSE.txt` |
@@ -38,6 +37,11 @@ released dependency graph.
 | `modernc.org/sqlite` | `v1.52.0` | BSD-style | `LICENSE` |
 
 ## Full Module Inventory
+
+Note: `github.com/mattn/go-sqlite3` appears below because `go list -m all`
+still resolves it as a test-time indirect dependency of `go.mau.fi/util`
+(dbutil's litestream tests). It is not linked into any released binary
+(`go version -m` lists `modernc.org/sqlite` only).
 
 | Module | Version | License | Local license file |
 | --- | --- | --- | --- |

@@ -40,7 +40,8 @@ stalkerware, or contacting people without consent.
 
 ## Install
 
-Copy-paste on macOS/Linux with Homebrew:
+Copy-paste on macOS or Linux with [Homebrew](https://brew.sh) installed (without
+Homebrew, use a release archive or source build - see the platform table below):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/dnikolayev/coderoam/main/scripts/install.sh | sh
