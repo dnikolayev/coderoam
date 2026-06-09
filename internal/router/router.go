@@ -126,7 +126,8 @@ func (r *Router) process(ctx context.Context, msg types.IncomingMessage) (Proces
 	if pending, ok, err := r.store.FindPendingInteraction(ctx, r.cfg.App.Profile, msg.ChatID, msg.SenderID); err != nil {
 		return ProcessResult{}, err
 	} else if ok {
-		selectedText, selectedIndex, valid, ambiguous := resolveInteractionReplyDetail(pending, msg.Text)
+		replyText, mediaDerived := interactionReplyText(msg)
+		selectedText, selectedIndex, valid, ambiguous := resolveInteractionReplyDetail(pending, replyText)
 		if !valid {
 			reply := invalidInteractionReply(pending)
 			if len(ambiguous) > 0 {
@@ -141,7 +142,9 @@ func (r *Router) process(ctx context.Context, msg types.IncomingMessage) (Proces
 		if err := r.store.MarkPendingInteractionAnswered(ctx, r.cfg.App.Profile, pending.ID, selectedIndex, selectedText); err != nil {
 			return ProcessResult{}, err
 		}
-		if msg.RawText == "" {
+		if mediaDerived {
+			msg.RawText = selectedText
+		} else if msg.RawText == "" {
 			msg.RawText = msg.Text
 		}
 		msg.Text = selectedText
@@ -767,7 +770,7 @@ func formatInteractionPrompt(action runner.Action) string {
 	var b strings.Builder
 	b.WriteString(action.Text)
 	if len(action.Options) > 0 {
-		b.WriteString("\n\nReply with one option:")
+		b.WriteString("\n\nReply with a number, option text, or your own answer:")
 		for i, option := range action.Options {
 			b.WriteString(fmt.Sprintf("\n%d. %s", i+1, option))
 		}
@@ -797,7 +800,7 @@ func resolveInteractionReplyDetail(record db.PendingInteractionRecord, text stri
 	if len(record.Options) == 0 {
 		return value, 0, true, nil
 	}
-	if index, ok := parseChoiceIndex(value); ok && index >= 1 && index <= len(record.Options) {
+	if index, ok := parseChoiceReplyIndex(value); ok && index >= 1 && index <= len(record.Options) {
 		return record.Options[index-1], index, true, nil
 	}
 	for i, option := range record.Options {
@@ -825,13 +828,9 @@ func resolveInteractionReplyDetail(record db.PendingInteractionRecord, text stri
 		return strings.TrimSpace(record.Options[bestIndex]), bestIndex + 1, true, nil
 	}
 	if len(tied) > 1 {
-		choices := make([]int, 0, len(tied))
-		for _, index := range tied {
-			choices = append(choices, index+1)
-		}
-		return "", 0, false, choices
+		return value, 0, true, nil
 	}
-	return "", 0, false, nil
+	return value, 0, true, nil
 }
 
 func choiceMatchScore(valueNorm string, valueTokens []string, optionNorm string) int {
@@ -931,17 +930,69 @@ func parseChoiceIndex(value string) (int, bool) {
 	return index, true
 }
 
+func parseChoiceReplyIndex(value string) (int, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	value = strings.TrimSuffix(value, ".")
+	value = strings.TrimSuffix(value, ")")
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	index := 0
+	for _, ch := range value {
+		if ch < '0' || ch > '9' {
+			return 0, false
+		}
+		index = index*10 + int(ch-'0')
+	}
+	return index, true
+}
+
+func interactionReplyText(msg types.IncomingMessage) (string, bool) {
+	text := strings.TrimSpace(msg.Text)
+	transcripts := []string{}
+	for _, item := range msg.Media {
+		transcript := strings.TrimSpace(item.Transcript)
+		if transcript != "" {
+			transcripts = append(transcripts, transcript)
+		}
+	}
+	if len(transcripts) == 0 {
+		return text, false
+	}
+	transcriptText := strings.Join(transcripts, "\n\n")
+	if text == "" || mediaOnlyText(text) {
+		return transcriptText, true
+	}
+	return strings.TrimSpace(text + "\n\n" + transcriptText), false
+}
+
+func mediaOnlyText(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "[") {
+			return false
+		}
+	}
+	return true
+}
+
 func invalidInteractionReply(record db.PendingInteractionRecord) string {
 	if len(record.Options) == 0 {
 		return "I did not receive an answer. Reply with the text you want to send."
 	}
 	var b strings.Builder
-	b.WriteString("I did not recognize that choice. Reply with a number")
-	if len(record.Options) > 0 {
-		b.WriteString(" or words from the option, for example: ")
-		b.WriteString(choiceExample(record.Options[0]))
-	}
-	b.WriteString(".")
+	b.WriteString("I did not receive an answer. Reply with a number, option text, or your own answer.")
 	for i, option := range record.Options {
 		b.WriteString(fmt.Sprintf("\n%d. %s", i+1, option))
 	}

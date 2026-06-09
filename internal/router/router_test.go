@@ -964,7 +964,7 @@ func TestRouterActiveSessionRoutesPendingChoiceReplyThroughSafeFallback(t *testi
 	}
 }
 
-func TestRouterPendingChoiceInvalidReplyKeepsInteraction(t *testing.T) {
+func TestRouterPendingChoiceFreeFormReplyRoutesToRunner(t *testing.T) {
 	cfg := config.Default()
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
@@ -991,25 +991,28 @@ func TestRouterPendingChoiceInvalidReplyKeepsInteraction(t *testing.T) {
 		RawText:   "@bridge ask-choice",
 		Timestamp: time.Now(),
 	})
+	if len(ft.Sent) != 1 || !strings.Contains(ft.Sent[0].Text, "or your own answer") {
+		t.Fatalf("choice prompt = %+v", ft.Sent)
+	}
 	result := r.Handle(t.Context(), types.IncomingMessage{
-		ID:        "msg-choice-bad",
+		ID:        "msg-choice-free",
 		ChatID:    "1203630test@g.us",
 		ChatType:  types.ChatTypeGroup,
 		SenderID:  "sender@s.whatsapp.net",
-		Text:      "9",
-		RawText:   "9",
+		Text:      "Let's skip both and write a short release note",
+		RawText:   "Let's skip both and write a short release note",
 		Timestamp: time.Now(),
 	})
-	if result.Ignored || result.Reason != "pending interaction invalid choice" {
-		t.Fatalf("invalid choice result = %+v", result)
+	if result.Ignored {
+		t.Fatalf("free-form choice reply ignored: %s", result.Reason)
 	}
-	if len(ft.Sent) != 2 || !strings.Contains(ft.Sent[1].Text, "I did not recognize that choice") {
-		t.Fatalf("invalid choice reply = %+v", ft.Sent)
+	if len(ft.Sent) != 2 || ft.Sent[1].Text != "router: Let's skip both and write a short release note" {
+		t.Fatalf("free-form choice reply = %+v", ft.Sent)
 	}
 	if _, ok, err := store.FindPendingInteraction(t.Context(), "test", "1203630test@g.us", "sender@s.whatsapp.net"); err != nil {
 		t.Fatal(err)
-	} else if !ok {
-		t.Fatal("pending interaction should remain active")
+	} else if ok {
+		t.Fatal("pending interaction still active after free-form answer")
 	}
 }
 
@@ -1051,25 +1054,74 @@ func TestResolveInteractionReplyMatchesHumanLanguage(t *testing.T) {
 	}
 }
 
-func TestResolveInteractionReplyReportsAmbiguousHumanLanguage(t *testing.T) {
+func TestResolveInteractionReplyKeepsAmbiguousHumanLanguageAsFreeText(t *testing.T) {
 	record := db.PendingInteractionRecord{Options: []string{
 		"Frontend documentation",
 		"Backend documentation",
 		"Release workflow",
 	}}
-	_, _, ok, ambiguous := resolveInteractionReplyDetail(record, "docs please")
-	if ok {
-		t.Fatal("ambiguous human reply should not resolve automatically")
+	text, index, ok, ambiguous := resolveInteractionReplyDetail(record, "docs please")
+	if !ok || text != "docs please" || index != 0 || len(ambiguous) != 0 {
+		t.Fatalf("ambiguous human reply = text=%q index=%d ok=%t ambiguous=%+v, want free text", text, index, ok, ambiguous)
 	}
-	if len(ambiguous) != 2 || ambiguous[0] != 1 || ambiguous[1] != 2 {
-		t.Fatalf("ambiguous matches = %+v, want [1 2]", ambiguous)
+}
+
+func TestResolveInteractionReplyDoesNotTreatMultiNumberTextAsChoice(t *testing.T) {
+	record := db.PendingInteractionRecord{Options: []string{"Plan", "Implement", "Test"}}
+	text, index, ok, _ := resolveInteractionReplyDetail(record, "1 and 3")
+	if !ok || text != "1 and 3" || index != 0 {
+		t.Fatalf("multi-number reply = text=%q index=%d ok=%t, want free text", text, index, ok)
 	}
-	reply := ambiguousInteractionReply(record, ambiguous)
-	if !strings.Contains(reply, "That could mean more than one option") ||
-		!strings.Contains(reply, "1. Frontend documentation") ||
-		!strings.Contains(reply, "2. Backend documentation") ||
-		strings.Contains(reply, "Release workflow") {
-		t.Fatalf("ambiguous reply = %q", reply)
+}
+
+func TestRouterPendingChoiceVoiceTranscriptRoutesToRunner(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Runner["default"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
+		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+	}
+	cfg.Groups = []config.GroupConfig{{ID: "1203630test@g.us", Alias: "test", Runner: "default", Enabled: true}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	if _, err := store.CreatePendingInteraction(t.Context(), db.PendingInteractionRecord{
+		ProfileID: "test",
+		ChatID:    "1203630test@g.us",
+		SenderID:  "sender@s.whatsapp.net",
+		RunnerID:  "default",
+		Prompt:    "Choose or answer freely.",
+		Options:   []string{"Plan", "Implement"},
+		ExpiresAt: time.Now().Add(15 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reply := r.Handle(t.Context(), types.IncomingMessage{
+		ID:       "msg-choice-voice",
+		ChatID:   "1203630test@g.us",
+		ChatType: types.ChatTypeGroup,
+		SenderID: "sender@s.whatsapp.net",
+		Text:     "[voice] mime=audio/ogg seconds=4 transcript=write the custom answer",
+		RawText:  "[voice] mime=audio/ogg seconds=4 transcript=write the custom answer",
+		Media: []types.MediaAttachment{{
+			Type:       "voice",
+			MIMEType:   "audio/ogg",
+			Transcript: "write the custom answer",
+		}},
+		Timestamp: time.Now(),
+	})
+	if reply.Ignored {
+		t.Fatalf("voice transcript reply ignored: %s", reply.Reason)
+	}
+	if len(ft.Sent) != 1 || ft.Sent[0].Text != "router: write the custom answer" {
+		t.Fatalf("voice transcript answer response = %+v", ft.Sent)
 	}
 }
 
