@@ -13,6 +13,7 @@ import (
 )
 
 const AppName = "coderoam"
+const legacyAppName = "chat-bridge"
 
 const (
 	GroupModeRunner        = "runner"
@@ -147,10 +148,11 @@ func ActiveSessionID(group GroupConfig) string {
 }
 
 func Default() Config {
+	appName := RuntimeAppName()
 	return Config{
 		App: AppConfig{
 			Profile:      "bot",
-			DatabasePath: "coderoam.sqlite3",
+			DatabasePath: appName + ".sqlite3",
 			LogLevel:     "info",
 		},
 		Transport: TransportConfig{
@@ -324,52 +326,62 @@ func ApplyDefaults(cfg *Config) {
 	}
 }
 
+func RuntimeAppName() string {
+	if strings.Contains(filepath.Base(os.Args[0]), legacyAppName) {
+		return legacyAppName
+	}
+	return AppName
+}
+
 func DefaultConfigPath() string {
+	appName := RuntimeAppName()
 	switch runtime.GOOS {
 	case "darwin":
-		return filepath.Join(homeDir(), "Library", "Application Support", AppName, "config.toml")
+		return filepath.Join(homeDir(), "Library", "Application Support", appName, "config.toml")
 	case "windows":
 		if appData := os.Getenv("APPDATA"); appData != "" {
-			return filepath.Join(appData, AppName, "config.toml")
+			return filepath.Join(appData, appName, "config.toml")
 		}
 	default:
 		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-			return filepath.Join(xdg, AppName, "config.toml")
+			return filepath.Join(xdg, appName, "config.toml")
 		}
 	}
-	return filepath.Join(homeDir(), ".config", AppName, "config.toml")
+	return filepath.Join(homeDir(), ".config", appName, "config.toml")
 }
 
 func DefaultDataDir() string {
+	appName := RuntimeAppName()
 	switch runtime.GOOS {
 	case "darwin":
-		return filepath.Join(homeDir(), "Library", "Application Support", AppName)
+		return filepath.Join(homeDir(), "Library", "Application Support", appName)
 	case "windows":
 		if appData := os.Getenv("APPDATA"); appData != "" {
-			return filepath.Join(appData, AppName)
+			return filepath.Join(appData, appName)
 		}
 	default:
 		if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
-			return filepath.Join(xdg, AppName)
+			return filepath.Join(xdg, appName)
 		}
 	}
-	return filepath.Join(homeDir(), ".local", "share", AppName)
+	return filepath.Join(homeDir(), ".local", "share", appName)
 }
 
 func DefaultLogPath() string {
+	appName := RuntimeAppName()
 	switch runtime.GOOS {
 	case "darwin":
-		return filepath.Join(homeDir(), "Library", "Logs", AppName, "coderoam.log")
+		return filepath.Join(homeDir(), "Library", "Logs", appName, appName+".log")
 	case "windows":
 		if local := os.Getenv("LOCALAPPDATA"); local != "" {
-			return filepath.Join(local, AppName, "logs", "coderoam.log")
+			return filepath.Join(local, appName, "logs", appName+".log")
 		}
 	default:
 		if state := os.Getenv("XDG_STATE_HOME"); state != "" {
-			return filepath.Join(state, AppName, "coderoam.log")
+			return filepath.Join(state, appName, appName+".log")
 		}
 	}
-	return filepath.Join(homeDir(), ".local", "state", AppName, "coderoam.log")
+	return filepath.Join(homeDir(), ".local", "state", appName, appName+".log")
 }
 
 func ProfileDir(profile string) string {
