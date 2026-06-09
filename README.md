@@ -37,7 +37,7 @@ stalkerware, or contacting people without consent.
 
 ## Status
 
-Current implementation: v0.1.2 local text/media bridge foundation.
+Current implementation: v0.1.3 local text/media bridge foundation.
 
 Project maturity: early MVP. The public API, config shape, database schema, and
 runner protocol can still change before v1.0.

@@ -6,6 +6,20 @@ protocols.
 
 ## Unreleased
 
+## v0.1.3 - 2026-06-09
+
+### Changed
+
+- README/Homebrew onboarding now offers a short `curl | sh` installer backed by
+  a checked-in `scripts/install.sh`.
+- Active-session setup now leaves fallback runners unset by default so WhatsApp
+  input is claimed by the live watcher instead of a blocking agent invocation.
+- Resume-based active runners such as `codex-active` are no longer used as
+  automatic fallback runners when no watcher is connected; messages stay queued
+  for `inbox watch`, `inbox next`, or `inbox drain`.
+- Minimal active-session acknowledgements now send a compact queued status when
+  no live watcher is connected.
+
 ## v0.1.2 - 2026-06-09
 
 ### Added
