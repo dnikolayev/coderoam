@@ -1,14 +1,31 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/dnikolayev/coderoam/internal/config"
 )
+
+// stopRunnerCleanup registers a cleanup that stops the runner with a live
+// context: t.Context() is already canceled inside Cleanup, which would let
+// Stop return before the subprocess exit is confirmed.
+func stopRunnerCleanup(t *testing.T, r *ProcessRunner) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := r.Stop(ctx); err != nil {
+			t.Errorf("runner stop: %v", err)
+		}
+	})
+}
 
 func TestProcessOnceJSONRunner(t *testing.T) {
 	r := NewProcessRunner(config.RunnerConfig{
@@ -53,9 +70,7 @@ func TestProcessJSONLRunnerReusesPersistentProcess(t *testing.T) {
 		Args:    []string{"-test.run=TestHelperProcess", "--", "jsonl"},
 		Env:     map[string]string{"GO_WANT_HELPER_PROCESS": "1"},
 	}, 5)
-	t.Cleanup(func() {
-		_ = r.Stop(t.Context())
-	})
+	stopRunnerCleanup(t, r)
 	first, err := r.Invoke(t.Context(), Request{
 		Version:   ProtocolVersion,
 		RequestID: "req_one",
@@ -87,9 +102,7 @@ func TestProcessJSONLRunnerAcceptsReplyEventEnvelope(t *testing.T) {
 		Args:    []string{"-test.run=TestHelperProcess", "--", "jsonl-event"},
 		Env:     map[string]string{"GO_WANT_HELPER_PROCESS": "1"},
 	}, 5)
-	t.Cleanup(func() {
-		_ = r.Stop(t.Context())
-	})
+	stopRunnerCleanup(t, r)
 	result, err := r.Invoke(t.Context(), Request{
 		Version:   ProtocolVersion,
 		RequestID: "req_event",
@@ -101,6 +114,73 @@ func TestProcessJSONLRunnerAcceptsReplyEventEnvelope(t *testing.T) {
 	if got := result.Response.Actions[0].Text; got != "event: hello" {
 		t.Fatalf("reply = %q", got)
 	}
+}
+
+func TestProcessJSONLRunnerStopConfirmsExitAndAllowsRestart(t *testing.T) {
+	r := NewProcessRunner(config.RunnerConfig{
+		Mode:    "process-jsonl",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestHelperProcess", "--", "jsonl"},
+		Env:     map[string]string{"GO_WANT_HELPER_PROCESS": "1"},
+	}, 5)
+	stopRunnerCleanup(t, r)
+	first, err := r.Invoke(t.Context(), Request{RequestID: "req_pre_stop", Text: "alpha"})
+	if err != nil {
+		t.Fatalf("Invoke before Stop: %v", err)
+	}
+	if got := first.Response.Actions[0].Text; got != "jsonl 1: alpha" {
+		t.Fatalf("first reply = %q", got)
+	}
+	if err := r.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop did not confirm process exit: %v", err)
+	}
+	// A fresh process must be started transparently; its counter resets,
+	// proving the old one was fully reaped rather than reused.
+	second, err := r.Invoke(t.Context(), Request{RequestID: "req_post_stop", Text: "beta"})
+	if err != nil {
+		t.Fatalf("Invoke after Stop: %v", err)
+	}
+	if got := second.Response.Actions[0].Text; got != "jsonl 1: beta" {
+		t.Fatalf("reply after restart = %q", got)
+	}
+}
+
+func TestProcessJSONLRunnerConcurrentInvokeAndStop(t *testing.T) {
+	// Regression test for the Stop vs waiter-goroutine data race: Stop used
+	// to read cmd.ProcessState while the goroutine running cmd.Wait wrote
+	// it. Run with -race to keep that hazard covered.
+	r := NewProcessRunner(config.RunnerConfig{
+		Mode:    "process-jsonl",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestHelperProcess", "--", "jsonl"},
+		Env:     map[string]string{"GO_WANT_HELPER_PROCESS": "1"},
+	}, 5)
+	stopRunnerCleanup(t, r)
+	var wg sync.WaitGroup
+	for worker := 0; worker < 4; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for i := 0; i < 6; i++ {
+				// Errors are expected when Stop kills the process
+				// mid-request; the race detector is the assertion here.
+				_, _ = r.Invoke(t.Context(), Request{
+					RequestID: fmt.Sprintf("req_%d_%d", worker, i),
+					Text:      "stress",
+				})
+			}
+		}(worker)
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 12; i++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = r.Stop(ctx)
+			cancel()
+		}
+	}()
+	wg.Wait()
 }
 
 func TestHelperProcess(t *testing.T) {

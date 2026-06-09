@@ -429,6 +429,38 @@ func TestActiveInboxClaimsOnlyMatchingSession(t *testing.T) {
 	}
 }
 
+func TestActiveInboxBlankSessionClaimDoesNotClaimNamedSession(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	msg := types.IncomingMessage{
+		ID:        "wa-named",
+		ChatID:    "chat-a@g.us",
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "for session a",
+		Timestamp: time.Now(),
+	}
+	if _, _, err := store.StoreActiveInboxMessage(t.Context(), "test", "alias-a", "session-a", msg); err != nil {
+		t.Fatal(err)
+	}
+	_, ok, err := store.ClaimNextActiveInbox(t.Context(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("blank-session claim picked up a named active-session row")
+	}
+	claimed, ok, err := store.ClaimNextActiveInboxForSession(t.Context(), "test", "session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || claimed.ExternalMessageID != msg.ID {
+		t.Fatalf("session-a claim = %+v ok=%t", claimed, ok)
+	}
+}
+
 func TestActiveInboxBatchClaimKeepsSameSessionInsideChat(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
 	if err != nil {
@@ -463,6 +495,14 @@ func TestActiveInboxBatchClaimKeepsSameSessionInsideChat(t *testing.T) {
 		if _, _, err := store.StoreActiveInboxMessage(t.Context(), "test", "codex-session", "codex-session", msg); err != nil {
 			t.Fatal(err)
 		}
+	}
+
+	blankSessionClaim, err := store.ClaimActiveInboxBatchForSession(t.Context(), "test", "chat-a@g.us", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blankSessionClaim) != 0 {
+		t.Fatalf("blank-session batch claim picked up named rows: %+v", blankSessionClaim)
 	}
 
 	claimed, err := store.ClaimActiveInboxBatchForSession(t.Context(), "test", "chat-a@g.us", "codex-session", 10)

@@ -80,7 +80,10 @@ func (s *cliState) inboxCommand() *cobra.Command {
 				return err
 			}
 			defer store.Close()
-			claimSessionID := resolveInboxSessionID(cfg, nextSessionID)
+			claimSessionID, err := requireInboxSessionID(cfg, nextSessionID)
+			if err != nil {
+				return err
+			}
 			deadline := time.Now().Add(time.Duration(timeoutSeconds) * time.Second)
 			for {
 				record, ok, err := store.ClaimNextActiveInboxForSession(cmd.Context(), cfg.App.Profile, claimSessionID)
@@ -128,7 +131,10 @@ func (s *cliState) inboxCommand() *cobra.Command {
 			if drainLimit <= 0 {
 				drainLimit = 50
 			}
-			claimSessionID := resolveInboxSessionID(cfg, drainSessionID)
+			claimSessionID, err := requireInboxSessionID(cfg, drainSessionID)
+			if err != nil {
+				return err
+			}
 			records := []db.ActiveInboxRecord{}
 			for len(records) < drainLimit {
 				record, ok, err := store.ClaimNextActiveInboxForSession(cmd.Context(), cfg.App.Profile, claimSessionID)
@@ -231,7 +237,10 @@ func (s *cliState) inboxCommand() *cobra.Command {
 				return err
 			}
 			defer store.Close()
-			sessionID := resolveInboxSessionID(cfg, recoverSessionID)
+			sessionID, err := requireInboxSessionID(cfg, recoverSessionID)
+			if err != nil {
+				return err
+			}
 			recovered, err := store.RecoverAbandonedActiveInbox(cmd.Context(), cfg.App.Profile, sessionID, recoverStaleAfter)
 			if err != nil {
 				return err
@@ -324,9 +333,9 @@ func watchActiveInbox(ctx context.Context, store *db.Store, cfg config.Config, o
 	if stderr == nil {
 		stderr = io.Discard
 	}
-	sessionID := resolveInboxSessionID(cfg, opts.SessionID)
-	if sessionID == "" {
-		return fmt.Errorf("could not resolve active session id; pass --session-id")
+	sessionID, err := requireInboxSessionID(cfg, opts.SessionID)
+	if err != nil {
+		return err
 	}
 	format := strings.TrimSpace(opts.Format)
 	if format == "" {
@@ -464,6 +473,26 @@ func resolveInboxSessionID(cfg config.Config, explicit string) string {
 		return sessionID
 	}
 	return defaultActiveSessionID(cfg)
+}
+
+func requireInboxSessionID(cfg config.Config, explicit string) (string, error) {
+	if sessionID := resolveInboxSessionID(cfg, explicit); sessionID != "" {
+		return sessionID, nil
+	}
+	activeSessions := []string{}
+	for _, group := range cfg.Groups {
+		if !group.Enabled || group.Mode != config.GroupModeActiveSession {
+			continue
+		}
+		sessionID := config.ActiveSessionID(group)
+		if sessionID != "" {
+			activeSessions = append(activeSessions, sessionID)
+		}
+	}
+	if len(activeSessions) > 1 {
+		return "", fmt.Errorf("multiple active sessions are configured (%s); pass --session-id to avoid claiming another client's WhatsApp queue", strings.Join(activeSessions, ", "))
+	}
+	return "", fmt.Errorf("could not resolve active session id; pass --session-id")
 }
 
 func defaultActiveSessionID(cfg config.Config) string {

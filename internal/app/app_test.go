@@ -1094,6 +1094,41 @@ func TestInboxDrainSurfacesSameSessionClaimedRows(t *testing.T) {
 	}
 }
 
+func TestInboxDrainRequiresSessionWhenMultipleActiveSessions(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(dir, "bridge.sqlite3")
+	cfg.Groups = []config.GroupConfig{
+		{
+			ID:              "claude@g.us",
+			Alias:           "claude-session",
+			Mode:            config.GroupModeActiveSession,
+			ActiveSessionID: "claude-session",
+			Enabled:         true,
+		},
+		{
+			ID:              "codex@g.us",
+			Alias:           "codex-session",
+			Mode:            config.GroupModeActiveSession,
+			ActiveSessionID: "codex-session",
+			Enabled:         true,
+		},
+	}
+	path := filepath.Join(dir, "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	state := &cliState{configPath: path}
+	cmd := state.inboxCommand()
+	cmd.SetArgs([]string{"drain"})
+	_, err := captureStdout(t, cmd.Execute)
+	if err == nil || !strings.Contains(err.Error(), "multiple active sessions are configured") {
+		t.Fatalf("drain err = %v, want multiple-session session-id guard", err)
+	}
+}
+
 func TestWriteInboxRecordIncludesLocalAudioAttachment(t *testing.T) {
 	cfg := config.Default()
 	record := db.ActiveInboxRecord{

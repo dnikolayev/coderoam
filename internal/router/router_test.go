@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -97,7 +98,13 @@ func TestRouterReusesProcessJSONLRunnerPerChatSession(t *testing.T) {
 	ft := fake.New(nil)
 	r := New(cfg, store, ft)
 	t.Cleanup(func() {
-		_ = r.Stop(t.Context())
+		// t.Context() is already canceled inside Cleanup, which would make
+		// Stop bail out before confirming the runner subprocess exited.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := r.Stop(ctx); err != nil {
+			t.Errorf("router stop: %v", err)
+		}
 	})
 	for i, text := range []string{"one", "two"} {
 		result := r.Handle(t.Context(), types.IncomingMessage{
@@ -586,6 +593,14 @@ func TestRouterActiveSessionScheduledFallbackDrainsLaterUnreadRows(t *testing.T)
 	defer store.Close()
 	ft := fake.New(nil)
 	r := New(cfg, store, ft)
+	// Stop must run before store.Close (defers are LIFO) so the scheduled
+	// fallback goroutine cannot write to the database, or recreate sqlite
+	// journal files inside t.TempDir(), after the test body returns.
+	defer func() {
+		if err := r.Stop(t.Context()); err != nil {
+			t.Errorf("router stop: %v", err)
+		}
+	}()
 	r.activeFallbackDelay = 5 * time.Millisecond
 	r.activeFallbackLimit = 1
 
@@ -631,6 +646,67 @@ func TestRouterActiveSessionScheduledFallbackDrainsLaterUnreadRows(t *testing.T)
 	}
 	if len(unread) != 0 {
 		t.Fatalf("unread rows left behind = %+v", unread)
+	}
+}
+
+func TestRouterStopDrainsScheduledFallbackWithoutProcessing(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Runner["codex-active"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
+		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+	}
+	cfg.Groups = []config.GroupConfig{{
+		ID:      "1203630active@g.us",
+		Alias:   "codex-session",
+		Runner:  "codex-active",
+		Mode:    config.GroupModeActiveSession,
+		Enabled: true,
+	}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	// A delay much longer than the test keeps the goroutine parked on its
+	// timer, so Stop must interrupt the wait instead of relying on luck.
+	r.activeFallbackDelay = time.Hour
+
+	result := r.Handle(t.Context(), types.IncomingMessage{
+		ID:        "msg-stop-drain",
+		ChatID:    "1203630active@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "380506171414@s.whatsapp.net",
+		Text:      "park on timer",
+		RawText:   "park on timer",
+		Timestamp: time.Now(),
+	})
+	if result.Ignored || result.Reason != "active inbox fallback scheduled" {
+		t.Fatalf("schedule result = %+v", result)
+	}
+	stopCtx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if err := r.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop did not drain the scheduled fallback goroutine: %v", err)
+	}
+	if sent := ft.SentSnapshot(); len(sent) != 0 {
+		t.Fatalf("fallback ran after Stop: %+v", sent)
+	}
+	unread, err := store.ListActiveInbox(t.Context(), "test", "unread", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unread) != 1 || unread[0].ExternalMessageID != "msg-stop-drain" {
+		t.Fatalf("unread rows after Stop = %+v", unread)
+	}
+	// A second Stop must stay safe and idempotent.
+	if err := r.Stop(stopCtx); err != nil {
+		t.Fatalf("second Stop: %v", err)
 	}
 }
 

@@ -644,8 +644,10 @@ func (s *Store) ClaimNextActiveInboxForSession(ctx context.Context, profileID, s
 		FROM active_inbox WHERE profile_id = ? AND status = 'unread'`
 	args := []any{profileID}
 	if sessionID != "" {
-		query += ` AND (session_id = ? OR session_id = '')`
+		query += ` AND session_id = ?`
 		args = append(args, sessionID)
+	} else {
+		query += ` AND session_id = ''`
 	}
 	query += ` ORDER BY id LIMIT 1`
 	row := tx.QueryRowContext(ctx, query, args...)
@@ -700,8 +702,10 @@ func (s *Store) ClaimActiveInboxBatchForSession(ctx context.Context, profileID, 
 		FROM active_inbox WHERE profile_id = ? AND chat_id = ? AND status = 'unread'`
 	args := []any{profileID, chatID}
 	if sessionID != "" {
-		query += ` AND (session_id = ? OR session_id = '')`
+		query += ` AND session_id = ?`
 		args = append(args, sessionID)
+	} else {
+		query += ` AND session_id = ''`
 	}
 	query += ` ORDER BY id LIMIT ?`
 	args = append(args, limit)
