@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
@@ -151,6 +152,7 @@ func TestVersionCommandPrintsVersion(t *testing.T) {
 func TestSetupCommandPrintsMessengerConnectionHowTo(t *testing.T) {
 	state := &cliState{}
 	cmd := state.setupCommand()
+	cmd.SetArgs([]string{"--print"})
 	out, err := captureStdout(t, cmd.Execute)
 	if err != nil {
 		t.Fatal(err)
@@ -187,7 +189,7 @@ func TestSetupCommandDetectsAgentClientsAndPrintsSelectionCommands(t *testing.T)
 
 	state := &cliState{}
 	cmd := state.setupCommand()
-	cmd.SetArgs([]string{"--agent", "auto", "--workdir", "/workspace/project", "--session-id", "claims-qa"})
+	cmd.SetArgs([]string{"--print", "--agent", "auto", "--workdir", "/workspace/project", "--session-id", "claims-qa"})
 	out, err := captureStdout(t, cmd.Execute)
 	if err != nil {
 		t.Fatal(err)
@@ -218,7 +220,7 @@ func TestSetupCommandCanShowSelectedMissingAgent(t *testing.T) {
 
 	state := &cliState{}
 	cmd := state.setupCommand()
-	cmd.SetArgs([]string{"--agent", "claude", "--workdir", "/workspace/project", "--session-id", "review"})
+	cmd.SetArgs([]string{"--print", "--agent", "claude", "--workdir", "/workspace/project", "--session-id", "review"})
 	out, err := captureStdout(t, cmd.Execute)
 	if err != nil {
 		t.Fatal(err)
@@ -235,6 +237,104 @@ func TestSetupCommandCanShowSelectedMissingAgent(t *testing.T) {
 	}
 	if strings.Contains(out, "Codex:") || strings.Contains(out, "Gemini:") {
 		t.Fatalf("selected-agent setup should not print all candidates:\n%s", out)
+	}
+}
+
+func TestSetupWizardConfiguresActiveSessionWithConfirmedAuthorizedNumber(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := config.Default()
+	cfg.App.Profile = "bot"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "coderoam.sqlite3")
+	cfg.Transport.Type = "fake"
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	ft := fake.New(nil)
+	state := &cliState{
+		configPath: path,
+		transportFactory: func(context.Context, config.Config) (transport.ChatTransport, error) {
+			return ft, nil
+		},
+	}
+	cmd := state.setupCommand()
+	cmd.SetArgs([]string{
+		"--yes",
+		"--agent", "codex",
+		"--authorized", "+1 (555) 000-1111",
+		"--group-name", "Coderoam Test",
+		"--workdir", "/workspace/project",
+		"--session-id", "codex-session",
+	})
+	out, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Ready.", "group: Coderoam Test", "agent: Codex", "authorized: +15550001111", "coderoam run"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("setup output missing %q:\n%s", want, out)
+		}
+	}
+	updated, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.Security.RequireSenderAllowlist {
+		t.Fatal("setup should enable sender allowlist")
+	}
+	for _, list := range [][]string{updated.Security.AllowedSenderIDs, updated.Security.AdminSenderIDs} {
+		if !containsString(list, "15550001111@s.whatsapp.net") {
+			t.Fatalf("sender allowlist = %+v, want normalized phone sender", list)
+		}
+	}
+	if _, ok := updated.Runner["codex-active"]; !ok {
+		t.Fatal("codex-active runner was not configured")
+	}
+	group, ok := resolveGroup(updated, "coderoam-test")
+	if !ok {
+		t.Fatalf("active group not configured: %+v", updated.Groups)
+	}
+	if group.Mode != config.GroupModeActiveSession || config.ActiveSessionID(group) != "codex-session" || group.Runner != "codex-active" {
+		t.Fatalf("active group = %+v", group)
+	}
+	if len(ft.Sent) != 1 || ft.Sent[0].ChatID != "+15550001111" {
+		t.Fatalf("invite sends = %+v", ft.Sent)
+	}
+}
+
+func TestSetupAuthorizedConfirmationRequiresExactNumber(t *testing.T) {
+	var out bytes.Buffer
+	_, err := setupCollectAuthorized(bufio.NewReader(strings.NewReader("+15550009999\n")), &out, "+15550001111", true, false)
+	if err == nil {
+		t.Fatal("expected confirmation mismatch")
+	}
+	if !strings.Contains(err.Error(), "confirmation did not match +15550001111") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestSendersAllowAddsActualObservedSenderID(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "coderoam.sqlite3")
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	state := &cliState{configPath: path}
+	cmd := state.sendersCommand()
+	cmd.SetArgs([]string{"allow", "207696145952858@lid", "--admin"})
+	if _, err := captureStdout(t, cmd.Execute); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.Security.RequireSenderAllowlist {
+		t.Fatal("sender allow command should enable sender allowlist")
+	}
+	if !containsString(updated.Security.AllowedSenderIDs, "207696145952858@lid") || !containsString(updated.Security.AdminSenderIDs, "207696145952858@lid") {
+		t.Fatalf("sender lists = allowed=%+v admin=%+v", updated.Security.AllowedSenderIDs, updated.Security.AdminSenderIDs)
 	}
 }
 

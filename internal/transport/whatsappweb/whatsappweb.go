@@ -63,6 +63,11 @@ func NewWithOptions(ctx context.Context, sessionPath string, logLevel string, op
 	if err != nil {
 		return nil, err
 	}
+	// The session store holds linked-device credentials (full account access).
+	// Keep it owner-only; encrypted-at-rest storage is still a TODO (SECURITY.md).
+	if info, statErr := os.Stat(sessionPath); statErr == nil && info.Mode().Perm() != 0o600 {
+		_ = os.Chmod(sessionPath, 0o600)
+	}
 	device, err := container.GetFirstDevice(ctx)
 	if err != nil {
 		return nil, err

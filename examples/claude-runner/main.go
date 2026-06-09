@@ -125,7 +125,7 @@ func runClaude(req request) (string, time.Duration, error) {
 		args = append(args, strings.Fields(extra)...)
 	}
 	req = transcribeAudioAttachments(ctx, req, "CLAUDE_RUNNER")
-	args = append(args, buildPrompt(req))
+	args = appendPromptArg(args, buildPrompt(req))
 
 	cmd := exec.CommandContext(ctx, claudeBin, args...)
 	cmd.Dir = workdir
@@ -285,6 +285,16 @@ func transcriberCommand(command string, localPath string) (string, []string) {
 		parts = append(parts, localPath)
 	}
 	return parts[0], parts[1:]
+}
+
+// appendPromptArg appends the prompt as a single positional argument, inserting
+// a "--" end-of-options separator first if the prompt would otherwise begin with
+// '-', so untrusted message content can never be parsed as a CLI flag.
+func appendPromptArg(args []string, prompt string) []string {
+	if strings.HasPrefix(prompt, "-") {
+		args = append(args, "--")
+	}
+	return append(args, prompt)
 }
 
 func isAudioAttachment(item mediaAttachment) bool {

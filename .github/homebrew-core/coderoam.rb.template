@@ -37,6 +37,6 @@ class Coderoam < Formula
 
   test do
     assert_match "coderoam", shell_output("#{bin}/coderoam version")
-    assert_match "Quick WhatsApp setup", shell_output("#{bin}/coderoam setup")
+    assert_match "Quick WhatsApp setup", shell_output("#{bin}/coderoam setup --print")
   end
 end

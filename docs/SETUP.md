@@ -13,19 +13,24 @@ until their adapters are implemented.
 Build or install coderoam, then run:
 
 ```sh
-coderoam init
-coderoam auth login --profile bot --qr
-coderoam runners preset codex-active --id codex-active --workdir /path/to/workspace --yes
-coderoam active start --name "Coderoam Session" --participants "+15550001111" --alias codex-session --session-id codex-session --yes
+coderoam setup
 coderoam run
 ```
 
-`coderoam setup` also scans `PATH` for supported local agent clients and prints
-matching runner preset commands. To focus on one client or one workspace:
+The setup wizard:
+
+- selects WhatsApp as the messenger
+- links the bridge account with QR if needed
+- detects supported local agent clients
+- asks which WhatsApp phone numbers may control the session
+- requires exact confirmation of those numbers before sending invites
+- creates a dedicated WhatsApp group and configures sender allowlisting
+
+For docs or automation, print the manual command guide instead:
 
 ```sh
-coderoam setup --agent auto --workdir /path/to/workspace --session-id codex-session
-coderoam setup --agent codex --workdir /path/to/workspace --session-id codex-session
+coderoam setup --print --agent auto --workdir /path/to/workspace --session-id codex-session
+coderoam setup --print --agent codex --workdir /path/to/workspace --session-id codex-session
 ```
 
 `active start` creates a dedicated WhatsApp group and direct-messages the group
@@ -77,7 +82,23 @@ coderoam runners preset agent --id my-agent --workdir /path/to/workspace --agent
 
 Use the `*-code` variants with `--yes` only when that local agent may edit files.
 Run `coderoam setup --agent auto` to detect which of these client commands are
-available on the current machine.
+available on the current machine, or `coderoam setup --print --agent auto` to
+only print the manual commands.
+
+## Authorized Senders
+
+Active coding sessions should use sender allowlisting. `coderoam setup` enables
+it after you confirm the intended phone numbers. WhatsApp may later deliver a
+message using a privacy-preserving `@lid` sender ID; when that happens, the
+inbox prompt tells the agent not to execute the message until you approve it
+locally:
+
+```sh
+coderoam senders allow "<sender-id>" --admin
+```
+
+Approve only after confirming the sender is one of the people whose phone number
+you entered during setup.
 
 ## Use An Existing WhatsApp Group
 

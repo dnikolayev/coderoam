@@ -173,7 +173,9 @@ func Default() Config {
 			LocalOnly:                true,
 			RequireGroupAllowlist:    true,
 			RedactPhoneNumbersInLogs: true,
-			StoreSessionsEncrypted:   true,
+			// Encrypted-at-rest session storage is not implemented yet, so this
+			// defaults to false rather than implying protection that does not exist.
+			StoreSessionsEncrypted: false,
 		},
 		RateLimits: RateLimitConfig{
 			MaxRepliesPerMinute: 6,

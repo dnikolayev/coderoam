@@ -76,4 +76,4 @@ case "$install_mode" in
     ;;
 esac
 
-coderoam setup --agent "$agent" --workdir "$workdir" --session-id "$session_id"
+coderoam setup --print --agent "$agent" --workdir "$workdir" --session-id "$session_id"

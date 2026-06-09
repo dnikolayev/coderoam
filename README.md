@@ -15,10 +15,10 @@ Copy-paste on macOS/Linux with Homebrew:
 curl -fsSL https://raw.githubusercontent.com/dnikolayev/coderoam/main/scripts/install.sh | sh
 ```
 
-That installs `coderoam` and starts the onboarding helper. It detects Codex,
-Claude, Gemini, and OpenCode on `PATH`, then prints the exact WhatsApp login,
-active group, watcher, and `coderoam run` commands for your machine. WhatsApp
-pairing still requires scanning a QR code with a dedicated bridge account.
+That installs `coderoam` and prints the short setup guide. Then run
+`coderoam setup` in an interactive terminal: it asks for the messenger, shows
+the WhatsApp QR flow, detects Codex/Claude/Gemini/OpenCode, confirms authorized
+phone numbers before sending invites, and creates the session group.
 The installer uses the latest stable tagged release by default; pass `--head`
 only when you intentionally want the moving `main` branch build.
 
@@ -39,7 +39,7 @@ stalkerware, or contacting people without consent.
 
 ## Status
 
-Current implementation: v0.1.4 local text/media bridge foundation.
+Current implementation: v0.1.5 guided mobile session onboarding.
 
 Project maturity: early MVP. The public API, config shape, database schema, and
 runner protocol can still change before v1.0.
@@ -108,12 +108,15 @@ brew install dnikolayev/coderoam/coderoam
 coderoam setup
 ```
 
-`coderoam setup` detects supported local agent CLIs on `PATH` and prints the
-matching runner preset commands. Use `--agent auto` to show everything detected,
-or select one client:
+`coderoam setup` is the friendly first-run wizard. It configures the selected
+agent, asks which WhatsApp numbers are authorized, requires exact confirmation
+of those numbers, links WhatsApp with QR if needed, and creates the dedicated
+session group.
+
+For docs or automation, print the old manual command guide instead:
 
 ```sh
-coderoam setup --agent codex --workdir /path/to/workspace --session-id codex-session
+coderoam setup --print --agent codex --workdir /path/to/workspace --session-id codex-session
 ```
 
 See [docs/HOMEBREW.md](docs/HOMEBREW.md) for the tap fallback, release
@@ -474,7 +477,8 @@ This avoids running a second competing Codex process while one Codex turn is
 already active.
 
 For coding or goal-style workflows, enable sender allowlisting so only trusted
-WhatsApp senders can instruct local agents:
+WhatsApp senders can instruct local agents. The setup wizard enables this by
+default after you confirm authorized phone numbers:
 
 ```toml
 [security]
@@ -483,10 +487,17 @@ admin_sender_ids = ["<trusted-sender>@lid"]
 allowed_sender_ids = ["<trusted-sender>@lid"]
 ```
 
-The prompt output labels slash-command messages as authorized or blocked based
-on these lists. If a voice memo or audio attachment may contain a slash command,
-the active agent must transcribe the audio first and only apply the command
-after the transcript is available and the sender is authorized.
+The prompt output labels senders as authorized or blocked based on these lists.
+If WhatsApp reports a new `@lid` sender ID on the first message, approve it only
+after confirming the person locally:
+
+```sh
+coderoam senders allow "<sender-id>" --admin
+```
+
+If a voice memo or audio attachment may contain a slash command, the active
+agent must transcribe the audio first and only apply the command after the
+transcript is available and the sender is authorized.
 
 Login with WhatsApp:
 

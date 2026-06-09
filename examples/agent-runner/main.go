@@ -144,7 +144,7 @@ func buildInvocation(req request) (invocation, error) {
 	prompt := buildPrompt(req)
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("AGENT_RUNNER_PROMPT_MODE"))) {
 	case "", "arg":
-		args = append(args, prompt)
+		args = appendPromptArg(args, prompt)
 		return invocation{Command: command, Args: args}, nil
 	case "stdin":
 		return invocation{Command: command, Args: args, Stdin: prompt}, nil
@@ -279,16 +279,54 @@ func runAudioTranscriber(ctx context.Context, command, path string) (string, err
 	timeout := envDuration("AGENT_RUNNER_AUDIO_TRANSCRIBE_TIMEOUT_SECONDS", 120*time.Second)
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	command = strings.ReplaceAll(command, "{path}", path)
-	cmd := exec.CommandContext(runCtx, "sh", "-c", command)
-	raw, err := cmd.CombinedOutput()
-	if runCtx.Err() == context.DeadlineExceeded {
-		return "", runCtx.Err()
+	name, args := transcriberCommand(command, path)
+	if name == "" {
+		return "", fmt.Errorf("audio transcriber command is empty")
 	}
-	if err != nil {
-		return "", fmt.Errorf("audio transcriber failed: %w: %s", err, truncate(string(raw), 1000))
+	cmd := exec.CommandContext(runCtx, name, args...)
+	var stdout strings.Builder
+	var stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if runCtx.Err() == context.DeadlineExceeded {
+			return "", runCtx.Err()
+		}
+		return "", fmt.Errorf("audio transcriber failed: %w: %s", err, truncate(stderr.String(), 1000))
 	}
-	return strings.TrimSpace(string(raw)), nil
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+// transcriberCommand splits the operator-configured transcriber command and
+// substitutes the audio path for {path} (or appends it as the final argument),
+// returning an argv that runs WITHOUT a shell. This keeps a path or filename
+// from ever being interpreted as additional shell commands or arguments.
+func transcriberCommand(command, path string) (string, []string) {
+	parts := strings.Fields(command)
+	if len(parts) == 0 {
+		return "", nil
+	}
+	replaced := false
+	for i, part := range parts {
+		if strings.Contains(part, "{path}") {
+			parts[i] = strings.ReplaceAll(part, "{path}", path)
+			replaced = true
+		}
+	}
+	if !replaced {
+		parts = append(parts, path)
+	}
+	return parts[0], parts[1:]
+}
+
+// appendPromptArg appends the prompt as a single positional argument, inserting
+// a "--" end-of-options separator first if the prompt would otherwise begin with
+// '-', so untrusted message content can never be parsed as a CLI flag.
+func appendPromptArg(args []string, prompt string) []string {
+	if strings.HasPrefix(prompt, "-") {
+		args = append(args, "--")
+	}
+	return append(args, prompt)
 }
 
 func isAudioAttachment(item mediaAttachment) bool {

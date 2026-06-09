@@ -154,6 +154,11 @@ func Open(path string) (*Store, error) {
 		conn.Close()
 		return nil, err
 	}
+	// Best-effort hardening: the database holds plaintext message content, so
+	// keep it owner-only (the parent dir is already created 0700).
+	if info, statErr := os.Stat(path); statErr == nil && info.Mode().Perm() != 0o600 {
+		_ = os.Chmod(path, 0o600)
+	}
 	return store, nil
 }
 

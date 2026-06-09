@@ -20,8 +20,8 @@ Because this repository is the application repository, not a dedicated
 curl -fsSL https://raw.githubusercontent.com/dnikolayev/coderoam/main/scripts/install.sh | sh
 ```
 
-The script runs the tap install and then starts `coderoam setup`. To run the
-Homebrew install manually:
+The script runs the tap install and prints the setup guide. To run the Homebrew
+install manually:
 
 ```sh
 brew tap dnikolayev/coderoam https://github.com/dnikolayev/coderoam.git
@@ -41,12 +41,21 @@ coderoam version
 coderoam setup
 ```
 
-`coderoam setup` prints the exact commands needed before mobile chat sessions
-can work.
+`coderoam setup` starts the interactive wizard. It links WhatsApp, asks for the
+authorized phone numbers, requires exact confirmation before sending invites,
+configures the selected local agent, and creates the dedicated session group.
+Use `coderoam setup --print` when you only want the manual command guide.
 
 ## After Install
 
 coderoam does not connect to a messenger automatically. For WhatsApp:
+
+```sh
+coderoam setup
+coderoam run
+```
+
+Manual equivalent:
 
 ```sh
 coderoam init
@@ -67,12 +76,12 @@ Read the full setup guide in [SETUP.md](SETUP.md).
 ## Homebrew Core Readiness
 
 Homebrew core expects new formulae to have a stable, tagged version and pass the
-formula audit. For `v0.1.4`, create and push the tag only after release preflight
+formula audit. For `v0.1.5`, create and push the tag only after release preflight
 passes:
 
 ```sh
-git tag -a v0.1.4 -m "coderoam v0.1.4"
-git push origin v0.1.4
+git tag -a v0.1.5 -m "coderoam v0.1.5"
+git push origin v0.1.5
 ```
 
 The `Release` workflow will upload:

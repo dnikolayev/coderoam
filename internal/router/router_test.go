@@ -1411,8 +1411,15 @@ func TestRouterActiveSessionSenderAllowlistAcceptsAdmins(t *testing.T) {
 		RawText:   "/goal do not run",
 		Timestamp: time.Now(),
 	})
-	if !ignored.Ignored || ignored.Reason != "sender is not allowlisted" {
-		t.Fatalf("unauthorized result = %+v", ignored)
+	if ignored.Ignored || ignored.Reason != "active inbox queued for sender verification" {
+		t.Fatalf("unauthorized active-session result = %+v", ignored)
+	}
+	rows, err = store.ListActiveInbox(t.Context(), "test", "unread", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[1].SenderID != "other@lid" {
+		t.Fatalf("active inbox after unauthorized sender = %+v", rows)
 	}
 }
 

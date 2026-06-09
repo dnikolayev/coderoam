@@ -6,13 +6,42 @@ protocols.
 
 ## Unreleased
 
+## v0.1.5 - 2026-06-09
+
+### Added
+
+- `coderoam setup` now runs an interactive first-run wizard that links
+  WhatsApp, configures an agent, confirms authorized phone numbers before
+  invites are sent, creates the active session group, and enables sender
+  allowlisting.
+- `coderoam setup --print` keeps the previous manual command guide for docs,
+  scripts, and non-interactive install output.
+- `coderoam senders allow <sender-id-or-phone> [--admin]` authorizes observed
+  WhatsApp sender IDs, including first-message `@lid` IDs.
+
 ### Changed
 
 - The repository tap formula now installs the latest stable release by default,
   and `scripts/install.sh` defaults to stable installs while keeping `--head`
   for contributor builds.
 - The pipe installer now detaches Homebrew commands from script stdin so
-  `coderoam setup` still runs when using `curl ... | sh`.
+  setup guidance still prints when using `curl ... | sh`.
+- Active-session groups now queue messages from unrecognized senders for local
+  verification instead of dropping them before the owner can approve the actual
+  WhatsApp sender ID.
+- Agent replies are normalized into WhatsApp-friendly plain text so numbered
+  choices, headings, and links remain readable in mobile chat.
+
+### Security
+
+- Agent runner prompts that begin with `-` now get a `--` separator before the
+  prompt argument so message text is not parsed as CLI flags.
+- The generic audio transcriber runner no longer invokes configured
+  transcriber commands through a shell.
+- Local message databases and WhatsApp session databases are chmodded to
+  owner-only permissions on open, where supported by the OS.
+- `store_sessions_encrypted` now defaults to `false` until encrypted session
+  storage is actually implemented.
 
 ## v0.1.4 - 2026-06-09
 

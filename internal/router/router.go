@@ -14,6 +14,7 @@ import (
 	"github.com/dnikolayev/coderoam/internal/runner"
 	"github.com/dnikolayev/coderoam/internal/transport"
 	"github.com/dnikolayev/coderoam/internal/types"
+	"github.com/dnikolayev/coderoam/internal/waformat"
 )
 
 type Router struct {
@@ -103,7 +104,9 @@ func (r *Router) process(ctx context.Context, msg types.IncomingMessage) (Proces
 	if !allowed {
 		group = config.GroupConfig{ID: msg.ChatID, Runner: "default", Enabled: true}
 	}
-	if r.cfg.Security.RequireSenderAllowlist && !r.senderAllowed(msg.SenderID) {
+	senderAuthorized := r.senderAllowed(msg.SenderID)
+	activeSessionSenderVerification := r.cfg.Security.RequireSenderAllowlist && !senderAuthorized && group.Mode == config.GroupModeActiveSession
+	if r.cfg.Security.RequireSenderAllowlist && !senderAuthorized && !activeSessionSenderVerification {
 		return ProcessResult{Ignored: true, Reason: "sender is not allowlisted"}, nil
 	}
 
@@ -159,6 +162,15 @@ func (r *Router) process(ctx context.Context, msg types.IncomingMessage) (Proces
 		}
 		if !fresh {
 			return ProcessResult{Ignored: true, Reason: "duplicate active inbox message ignored"}, nil
+		}
+		if activeSessionSenderVerification {
+			if r.shouldSendActiveAck("queued") {
+				ack := fmt.Sprintf("Received #%d. Waiting for local approval before this sender can control the session.", record.ID)
+				if _, err := r.store.QueueActiveOutbox(ctx, r.cfg.App.Profile, msg.ChatID, ack, false); err != nil {
+					return ProcessResult{}, err
+				}
+			}
+			return ProcessResult{Reason: "active inbox queued for sender verification"}, nil
 		}
 		if _, connected, err := r.store.ActiveWatcherFresh(ctx, r.cfg.App.Profile, sessionID, activeWatcherStaleAfter); err != nil {
 			return ProcessResult{}, err
@@ -304,7 +316,7 @@ func (r *Router) invokeRunnerAndSend(ctx context.Context, msg types.IncomingMess
 		if action.Type != "reply" && action.Type != "error" {
 			continue
 		}
-		for _, chunk := range chunkText(action.Text, r.cfg.RateLimits.MaxResponseChars, r.cfg.Reply.MaxChunks, r.cfg.Reply.ChunkSeparator) {
+		for _, chunk := range chunkText(waformat.Reply(action.Text), r.cfg.RateLimits.MaxResponseChars, r.cfg.Reply.MaxChunks, r.cfg.Reply.ChunkSeparator) {
 			if sendErr := r.sendText(ctx, msg, messageID, chunk); sendErr != nil {
 				return ProcessResult{Ignored: false, Reason: sendErr.Error(), Sent: sent}, "send_failed", nil
 			}
@@ -768,7 +780,7 @@ func normalizeInteractionAction(action runner.Action) runner.Action {
 func formatInteractionPrompt(action runner.Action) string {
 	action = normalizeInteractionAction(action)
 	var b strings.Builder
-	b.WriteString(action.Text)
+	b.WriteString(waformat.Reply(action.Text))
 	if len(action.Options) > 0 {
 		b.WriteString("\n\nReply with a number, option text, or your own answer:")
 		for i, option := range action.Options {
