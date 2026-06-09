@@ -6,6 +6,23 @@ protocols.
 
 ## Unreleased
 
+## v0.1.4 - 2026-06-09
+
+### Changed
+
+- API-style Codex and agent sessions now prefer `inbox drain` at turn
+  boundaries instead of detached watchers that can claim WhatsApp messages
+  before the active turn consumes them.
+- Pending runner interactions now accept option numbers, option text, custom
+  free-form answers, and transcribed voice-note answers.
+- Local `chat-bridge` binaries keep using legacy `chat-bridge` config, data,
+  database, and log paths while `coderoam` binaries use `coderoam` paths.
+
+### Fixed
+
+- `inbox drain` now surfaces same-session rows already claimed by a previous
+  watcher, preventing read-but-unseen WhatsApp messages from staying hidden.
+
 ## v0.1.3 - 2026-06-09
 
 ### Changed

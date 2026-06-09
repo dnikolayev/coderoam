@@ -107,7 +107,7 @@ tarball, and renders the Homebrew-core candidate formula with the real source
 Use manual dispatch for dry-run packaging before a tag:
 
 ```sh
-gh workflow run release.yml -f version=v0.1.3
+gh workflow run release.yml -f version=v0.1.4
 ```
 
 Manual dispatch does not create a GitHub release or a final Homebrew-core
