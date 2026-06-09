@@ -59,7 +59,9 @@ func (r *Router) SetConfig(cfg config.Config) {
 	cached := r.runnerCache
 	r.runnerCache = map[string]runner.Runner{}
 	r.mu.Unlock()
-	stopRunners(context.Background(), cached)
+	if err := stopRunners(context.Background(), cached); err != nil {
+		fmt.Fprintf(os.Stderr, "stopping old runners after config reload: %v\n", err)
+	}
 }
 
 func (r *Router) Stop(ctx context.Context) error {
@@ -1021,17 +1023,6 @@ func ambiguousInteractionReply(record db.PendingInteractionRecord, indexes []int
 		b.WriteString(fmt.Sprintf("\n%d. %s", index, record.Options[index-1]))
 	}
 	return b.String()
-}
-
-func choiceExample(option string) string {
-	tokens := meaningfulChoiceTokens(normalizeChoiceText(option))
-	if len(tokens) == 0 {
-		return "`1`"
-	}
-	if len(tokens) > 2 {
-		tokens = tokens[:2]
-	}
-	return "`" + strings.Join(tokens, " ") + "`"
 }
 
 func detectReplyInteraction(text string) ([]string, bool) {

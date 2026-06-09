@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/mdp/qrterminal/v3"
 	"github.com/skip2/go-qrcode"
 	"go.mau.fi/whatsmeow"
@@ -23,6 +22,7 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
+	_ "modernc.org/sqlite"
 
 	"github.com/dnikolayev/coderoam/internal/transport"
 	"github.com/dnikolayev/coderoam/internal/types"
@@ -59,7 +59,13 @@ func NewWithOptions(ctx context.Context, sessionPath string, logLevel string, op
 	}
 	dbLog := waLog.Stdout("whatsmeow-db", strings.ToUpper(logLevel), false)
 	clientLog := waLog.Stdout("whatsmeow", strings.ToUpper(logLevel), false)
-	container, err := sqlstore.New(ctx, "sqlite3", "file:"+sessionPath+"?_foreign_keys=on", dbLog)
+	// modernc.org/sqlite (pure Go, the same driver internal/db uses) registers
+	// itself as "sqlite"; whatsmeow's dbutil maps any "sqlite*" dialect to
+	// SQLite. Pragmas must use modernc's _pragma=name(value) form - mattn-style
+	// params like _foreign_keys=on would be silently ignored. whatsmeow refuses
+	// to start without foreign keys, and busy_timeout(5000) preserves the 5s
+	// default the previous CGO driver applied to every connection.
+	container, err := sqlstore.New(ctx, "sqlite", "file:"+sessionPath+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)", dbLog)
 	if err != nil {
 		return nil, err
 	}
@@ -475,11 +481,6 @@ func (t *Transport) handleGroupInfoEvent(evt *events.GroupInfo) {
 		groupEvent.SenderID = evt.Sender.String()
 	}
 	handler(context.Background(), groupEvent)
-}
-
-func extractText(message *waProto.Message) string {
-	text, _ := extractTextAndMedia(message)
-	return text
 }
 
 func extractTextAndMedia(message *waProto.Message) (string, []types.MediaAttachment) {

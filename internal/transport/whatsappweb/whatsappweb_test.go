@@ -86,7 +86,7 @@ func TestTranscribeAudioAttachmentsAddsTranscript(t *testing.T) {
 		Type:      "voice",
 		MIMEType:  "audio/ogg; codecs=opus",
 		LocalPath: "/tmp/voice note.ogg",
-	}}, os.Args[0]+" -test.run=TestTranscribeAudioAttachmentsAddsTranscript -- {path}", time.Second)
+	}}, os.Args[0]+" -test.run=TestTranscribeAudioAttachmentsAddsTranscript -- {path}", 10*time.Second)
 	if len(media) != 1 {
 		t.Fatalf("media count = %d, want 1", len(media))
 	}

@@ -389,9 +389,9 @@ func (r *ProcessRunner) stopJSONLLocked(ctx context.Context) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
-	if cmd.ProcessState == nil || !cmd.ProcessState.Exited() {
-		_ = cmd.Process.Kill()
-	}
+	// Do not inspect cmd.ProcessState here: the goroutine running Wait mutates
+	// it. Kill is safe to call after process exit and avoids a race.
+	_ = cmd.Process.Kill()
 	if waitDone == nil {
 		return nil
 	}
