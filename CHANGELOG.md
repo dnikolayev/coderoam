@@ -6,6 +6,37 @@ protocols.
 
 ## Unreleased
 
+## v0.1.7 - 2026-06-09
+
+### Added
+
+- `coderoam runbook` writes/update-safe relay instructions for Claude, Codex,
+  Gemini, and OpenCode workspaces.
+- `coderoam setup` installs those local runbook sections by default, with
+  `--no-runbook` available when a workspace should not be touched.
+- `coderoam run` now enforces a per-profile daemon lock and exposes
+  `--takeover` for deliberate replacement of an already-running bridge daemon.
+
+### Changed
+
+- `coderoam init` is now idempotent when a config already exists: it ensures the
+  profile database exists, refreshes unsupported old session-encryption defaults
+  when needed, and points users back to setup or runner presets instead of
+  failing.
+- Agent relay docs now tell Codex, Claude, Gemini, OpenCode, and generic agents
+  to use the session id for their own group instead of reusing `codex-session`.
+- The Codex setup path now defaults to `codex-code` for background fallback
+  lanes and suppresses routine WhatsApp replies by default.
+- `active start` can default invite recipients from configured phone-addressable
+  owner allowlists while skipping privacy `@lid` and group IDs.
+
+### Fixed
+
+- QR login keeps the connection open briefly after pairing so WhatsApp can
+  finish linked-device registration before a standalone `auth login` exits.
+- QR login refreshes expired QR batches within a longer login window instead of
+  failing quickly with a stale QR image.
+
 ## v0.1.6 - 2026-06-09
 
 ### Fixed
