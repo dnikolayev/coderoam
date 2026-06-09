@@ -4,17 +4,17 @@ set -eu
 agent="${CODEROAM_AGENT:-auto}"
 session_id="${CODEROAM_SESSION_ID:-codex-session}"
 workdir="${CODEROAM_WORKDIR:-$(pwd)}"
-install_mode="${CODEROAM_INSTALL_MODE:-head}"
+install_mode="${CODEROAM_INSTALL_MODE:-stable}"
 
 usage() {
   cat <<'EOF'
-Usage: install.sh [--agent auto|codex|claude|gemini|opencode|none] [--session-id ID] [--workdir PATH] [--stable]
+Usage: install.sh [--agent auto|codex|claude|gemini|opencode|none] [--session-id ID] [--workdir PATH] [--stable|--head]
 
 Environment:
   CODEROAM_AGENT         Agent setup target. Default: auto
   CODEROAM_SESSION_ID    Active session id. Default: codex-session
   CODEROAM_WORKDIR       Workspace path for generated agent commands. Default: current directory
-  CODEROAM_INSTALL_MODE  "head" or "stable". Default: head
+  CODEROAM_INSTALL_MODE  "stable" or "head". Default: stable
 EOF
 }
 
@@ -36,6 +36,10 @@ while [ "$#" -gt 0 ]; do
       install_mode="stable"
       shift
       ;;
+    --head)
+      install_mode="head"
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -54,6 +58,10 @@ if ! command -v brew >/dev/null 2>&1; then
 fi
 
 brew tap dnikolayev/coderoam https://github.com/dnikolayev/coderoam.git
+
+if command -v brew >/dev/null 2>&1 && brew trust --help >/dev/null 2>&1; then
+  brew trust dnikolayev/coderoam >/dev/null 2>&1 || true
+fi
 
 case "$install_mode" in
   stable)

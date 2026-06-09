@@ -19,6 +19,8 @@ That installs `coderoam` and starts the onboarding helper. It detects Codex,
 Claude, Gemini, and OpenCode on `PATH`, then prints the exact WhatsApp login,
 active group, watcher, and `coderoam run` commands for your machine. WhatsApp
 pairing still requires scanning a QR code with a dedicated bridge account.
+The installer uses the latest stable tagged release by default; pass `--head`
+only when you intentionally want the moving `main` branch build.
 
 If you prefer not to run a remote script, read
 [`scripts/install.sh`](scripts/install.sh) and run the Homebrew commands in
@@ -102,7 +104,7 @@ Homebrew tap install:
 
 ```sh
 brew tap dnikolayev/coderoam https://github.com/dnikolayev/coderoam.git
-brew install --HEAD dnikolayev/coderoam/coderoam
+brew install dnikolayev/coderoam/coderoam
 coderoam setup
 ```
 

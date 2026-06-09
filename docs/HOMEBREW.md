@@ -4,8 +4,9 @@ coderoam is a CLI app, so Homebrew packaging uses a formula.
 
 There are two Homebrew paths:
 
-- The checked-in `Formula/coderoam.rb` is the tap fallback. It installs from
-  `HEAD` while the project is moving quickly.
+- The checked-in `Formula/coderoam.rb` is the repository tap fallback. It
+  installs the latest stable tagged release by default, with `--HEAD` available
+  for contributors who want the moving `main` branch.
 - Tagged releases generate a source-built Homebrew-core candidate formula from
   `.github/homebrew-core/coderoam.rb.template`. The generated formula includes
   the real release tarball `sha256`.
@@ -24,6 +25,12 @@ Homebrew install manually:
 
 ```sh
 brew tap dnikolayev/coderoam https://github.com/dnikolayev/coderoam.git
+brew install dnikolayev/coderoam/coderoam
+```
+
+To test the moving `main` branch instead:
+
+```sh
 brew install --HEAD dnikolayev/coderoam/coderoam
 ```
 
