@@ -1,0 +1,54 @@
+# golangci-lint configuration (v2 schema, requires golangci-lint v2.x).
+# Run locally with: make lint
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - errorlint
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - staticcheck
+    - unused
+  settings:
+    gosec:
+      excludes:
+        # coderoam's whole job is launching agent CLIs (codex, claude, ...)
+        # with user-configured commands and reading user-supplied config and
+        # transcript paths, so these rules flag intended behaviour:
+        - G204 # subprocess launched with variable command/arguments
+        - G301 # directory permissions 0o755 for shared runbook/state dirs
+        - G304 # file inclusion via variable (config/transcript paths)
+        - G306 # file permissions 0o644 for generated runbooks
+        - G702 # command injection taint analysis (same rationale as G204)
+        - G703 # path traversal taint analysis (same rationale as G304)
+        # errcheck already reports unhandled errors; G104 duplicates it.
+        - G104
+    misspell:
+      ignore-rules:
+        # Deliberate coinage in waformat.go ("code is placeheld").
+        - placeheld
+  exclusions:
+    rules:
+      # Tests routinely ignore errors on cleanup paths and use fixed
+      # permissions/temp paths; keep errcheck and gosec focused on
+      # production code.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+      # Best-effort cleanup and terminal output: deferred Close/Stop/Rollback
+      # and fmt.Fprint* to stdout/stderr have no useful error to handle.
+      - linters:
+          - errcheck
+        text: 'Error return value of `([^`]*\.(Close|Stop|Rollback)|fmt\.Fprint(f|ln)?|os\.RemoveAll|os\.Stdout\.WriteString)` is not checked'
+      # QF* are optional quickfix suggestions, not correctness issues.
+      - linters:
+          - staticcheck
+        text: '^QF1'

@@ -11,6 +11,44 @@ permissions:
 
 jobs:
   test:
+    # No windows runners yet: the service-management code paths (launchd,
+    # systemd) are untested on Windows, so a windows job would give false
+    # confidence. Revisit once Windows service support is exercised.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        # setup-go@v6 with go-version-file enables module/build caching by
+        # default; do not set cache: false here.
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (race detector)
+        run: go test -race ./...
+
+      - name: Build
+        run: |
+          go build -o bin/coderoam ./cmd/coderoam
+          go build -o bin/coderoam-transcribe ./cmd/coderoam-transcribe
+          go build -o bin/agent-runner ./examples/agent-runner
+          go build -o bin/codex-runner ./examples/codex-runner
+          go build -o bin/claude-runner ./examples/claude-runner
+          go build -o bin/echo-runner ./examples/echo-runner
+
+  lint:
     runs-on: ubuntu-latest
     steps:
       - name: Check out
@@ -21,17 +59,32 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Download modules
-        run: go mod download
+      - name: golangci-lint
+        # .golangci.yml uses the v2 config schema, which requires
+        # golangci-lint v2 and therefore golangci-lint-action v7 or newer.
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.12.2
 
-      - name: Test
-        run: go test ./...
+  build-release-targets:
+    # Smoke-builds the main binary for every supported release OS/arch. Both
+    # sqlite stores (app db and WhatsApp session store) use the pure-Go
+    # modernc.org/sqlite driver, so the release pipeline cross-compiles every
+    # target with CGO disabled and a single Linux runner covers them all here.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
 
-      - name: Build
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build release targets (CGO disabled)
         run: |
-          go build -o bin/coderoam ./cmd/coderoam
-          go build -o bin/coderoam-transcribe ./cmd/coderoam-transcribe
-          go build -o bin/agent-runner ./examples/agent-runner
-          go build -o bin/codex-runner ./examples/codex-runner
-          go build -o bin/claude-runner ./examples/claude-runner
-          go build -o bin/echo-runner ./examples/echo-runner
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64; do
+            echo "building ${target}"
+            GOOS="${target%/*}" GOARCH="${target#*/}" CGO_ENABLED=0 \
+              go build -o /dev/null ./cmd/coderoam
+          done

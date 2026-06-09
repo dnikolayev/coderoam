@@ -20,26 +20,41 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
+      # Every target cross-compiles with CGO_ENABLED=0 (sqlite is pure Go via
+      # modernc.org/sqlite), so no C toolchains or per-target native runners
+      # are needed. Darwin targets still build on a macOS runner because
+      # codesign and notarytool only run there; everything else builds on one
+      # Linux runner.
       matrix:
         include:
           - target: darwin_arm64
             runner: macos-15
+            goos: darwin
+            goarch: arm64
             archive: tar.gz
             ext: ""
           - target: darwin_amd64
-            runner: macos-15-intel
+            runner: macos-15
+            goos: darwin
+            goarch: amd64
             archive: tar.gz
             ext: ""
           - target: linux_amd64
             runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
             archive: tar.gz
             ext: ""
           - target: linux_arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-24.04
+            goos: linux
+            goarch: arm64
             archive: tar.gz
             ext: ""
           - target: windows_amd64
-            runner: windows-latest
+            runner: ubuntu-24.04
+            goos: windows
+            goarch: amd64
             archive: zip
             ext: ".exe"
 
@@ -61,17 +76,12 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Set up Windows C compiler
-        if: runner.os == 'Windows'
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          path-type: inherit
-          update: true
-          install: mingw-w64-ucrt-x86_64-gcc
-
       - name: Build binaries
         shell: bash
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
         run: |
           set -euo pipefail
 
@@ -160,7 +170,7 @@ jobs:
           artifact_name="$(basename "${artifact_dir}")"
 
           if [[ "${{ matrix.archive }}" == "zip" ]]; then
-            powershell -NoProfile -Command "Compress-Archive -Path '${artifact_dir}' -DestinationPath 'dist/${artifact_name}.zip' -Force"
+            (cd dist && zip -r "${artifact_name}.zip" "${artifact_name}")
           else
             tar -C dist -czf "dist/${artifact_name}.tar.gz" "${artifact_name}"
           fi
