@@ -4,6 +4,7 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"os"
 
 	"golang.org/x/sys/windows"
@@ -39,4 +40,24 @@ func tryLockFile(f *os.File) (bool, error) {
 
 func unlockFile(f *os.File) error {
 	return windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, runLockOverlapped())
+}
+
+// lockedFileMatchesPath reports whether path still names the locked file. On
+// Windows this cannot become false while f is open: the lock file is opened
+// with os.OpenFile, whose syscall.Open passes sharemode FILE_SHARE_READ |
+// FILE_SHARE_WRITE *without* FILE_SHARE_DELETE (verified against go1.26
+// src/syscall/syscall_windows.go), so DeleteFile and MoveFileEx on the path
+// fail with a sharing violation for as long as the handle exists. The unix
+// unlink-and-recreate hole is therefore structurally impossible here, and the
+// fstat/stat compare is intentionally not ported.
+func lockedFileMatchesPath(_ *os.File, _ string) (bool, error) {
+	return true, nil
+}
+
+// takeoverIncumbent refuses takeover on Windows: there is no SIGTERM here
+// (os.Process.Signal supports only Kill), so coderoam cannot ask the incumbent
+// daemon to shut down cleanly. Failing fast with an honest message beats the
+// old behavior of looping until the generic "could not acquire run lock".
+func takeoverIncumbent(holder int) error {
+	return fmt.Errorf("takeover is not supported on Windows; stop the running coderoam process (pid %d) manually and rerun", holder)
 }

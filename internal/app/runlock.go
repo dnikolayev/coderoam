@@ -15,6 +15,12 @@ import (
 
 var runLockTakeoverTimeout = 8 * time.Second
 
+// runLockWarn reports lock-protocol anomalies that must be loud but must not
+// abort a shutdown. Package-level so tests can capture the warning.
+var runLockWarn = func(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "warning: "+format+"\n", args...)
+}
+
 func runLockPath(profile string) string {
 	return filepath.Join(config.ProfileDir(profile), "run.lock")
 }
@@ -50,8 +56,27 @@ func acquireRunLock(profile string, takeover bool) (func(), error) {
 //     an inode that another has just unlinked from the path, after which a
 //     third creates a fresh file there and locks it too - two holders on two
 //     different inodes behind one path.
+//   - coderoam never unlinks the lock file, but an outside actor can (manual
+//     rm, profile-dir cleanup). Acquisition therefore re-verifies, after
+//     locking, that the path still names the locked inode and retries on the
+//     live file otherwise (lockedFileMatchesPath: on unix an fstat-vs-stat
+//     dev+inode compare; on windows the open handle's sharing mode makes the
+//     unlink impossible, see runlock_windows.go). Release re-checks the same
+//     invariant and warns loudly when the holder was evicted.
 //
-// Remaining (accepted) windows, none of which break mutual exclusion:
+// Remaining (accepted) windows:
+//   - UNFIXABLE WITH AN ADVISORY FILE LOCK ALONE (unix): if an outside actor
+//     removes the lock file while a daemon holds it, the kernel lock stays on
+//     the now-unlinked inode and the next contender creates and locks a fresh
+//     file at the path - two daemons, mutual exclusion broken from the rm
+//     onward. The holder cannot veto an unlink it never observes, and the
+//     contender cannot see a lock on an inode the path no longer names. The
+//     inode checks above close the narrower stale-fd variant (open the path,
+//     lose an unlink+recreate race, lock the dead inode) and guarantee the
+//     eviction is at least detected and reported at release. Operators must
+//     not delete run.lock while a daemon is running.
+//
+// Narrower windows, none of which break mutual exclusion:
 //   - A contender may read the previous owner's pid before the new winner
 //     overwrites it, so a refusal message or takeover signal can name a pid
 //     that just exited. Signaling a dead pid is a no-op, and the takeover
@@ -84,6 +109,20 @@ func acquireRunLockAtAs(path string, takeover bool, ownerID string) (func(), err
 			return nil, err
 		}
 		if locked {
+			same, err := lockedFileMatchesPath(f, path)
+			if err != nil {
+				_ = unlockFile(f)
+				_ = f.Close()
+				return nil, err
+			}
+			if !same {
+				// Lost an unlink(+recreate) race between open and lock: the
+				// lock landed on an inode the path no longer names, so it
+				// excludes nobody. Drop it and retry on the live file.
+				_ = unlockFile(f)
+				_ = f.Close()
+				continue
+			}
 			if err := writeRunLockOwner(f, ownerID); err != nil {
 				_ = unlockFile(f)
 				_ = f.Close()
@@ -92,6 +131,13 @@ func acquireRunLockAtAs(path string, takeover bool, ownerID string) (func(), err
 			var once sync.Once
 			return func() {
 				once.Do(func() {
+					// An outside rm of the lock file while held silently
+					// breaks single-daemon (see protocol above); release is
+					// the last place the eviction is detectable, so report it
+					// loudly before letting go.
+					if same, err := lockedFileMatchesPath(f, path); err == nil && !same {
+						runLockWarn("run lock %s was removed or replaced while held; a second daemon may have been running concurrently", path)
+					}
 					// Blank the recorded pid while still holding the lock so
 					// no reader sees stale content after a clean exit, then
 					// let the close drop the kernel lock. The file itself
@@ -112,9 +158,10 @@ func acquireRunLockAtAs(path string, takeover bool, ownerID string) (func(), err
 		case holder > 0 && !takeover:
 			return nil, fmt.Errorf("a coderoam daemon is already running (pid %d); stop it or rerun with --takeover", holder)
 		case holder > 0:
-			_ = signalProcess(holder, syscall.SIGTERM)
-			if !waitForProcessExit(holder, runLockTakeoverTimeout) {
-				return nil, fmt.Errorf("a coderoam daemon is still running after takeover signal (pid %d)", holder)
+			// Platform-specific: unix signals the incumbent and waits for it
+			// to exit; windows refuses honestly (no SIGTERM there).
+			if err := takeoverIncumbent(holder); err != nil {
+				return nil, err
 			}
 		case !takeover && attempt >= 20:
 			// Locked, but the holder has not recorded its pid yet (we raced
