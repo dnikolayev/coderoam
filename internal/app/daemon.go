@@ -3,9 +3,12 @@ package app
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"os/signal"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -71,6 +74,12 @@ func (s *cliState) runCommand() *cobra.Command {
 			}
 			messages := make(chan types.IncomingMessage, queueDepth)
 			groupEvents := make(chan types.GroupEvent, queueDepth)
+			// liveCfg hands the config between the run loop's goroutines: the
+			// group-events worker stores a fresh snapshot when a relay group is
+			// archived, while the ticker and the post-connect startup path each
+			// load once per pass. Sharing the local cfg variable directly would
+			// tear concurrent reads of the large config.Config struct.
+			liveCfg := newRunConfigHolder(cfg)
 			var workers sync.WaitGroup
 			workers.Add(1)
 			go func() {
@@ -97,13 +106,13 @@ func (s *cliState) runCommand() *cobra.Command {
 					case <-ctx.Done():
 						return
 					case event := <-groupEvents:
-						updated, archived, err := handleRelayGroupLifecycleEvent(ctx, cfg, path, store, chatTransport, event)
+						updated, archived, err := handleRelayGroupLifecycleEvent(ctx, liveCfg.Load(), path, store, chatTransport, event)
 						if err != nil {
 							fmt.Printf("[group-event] chat=%s error=%s\n", logging.Redact(event.ChatID), err)
 							continue
 						}
 						if archived {
-							cfg = updated
+							liveCfg.Store(updated)
 							bridgeRouter.SetConfig(updated)
 							fmt.Printf("[group-event] chat=%s archived=true\n", logging.Redact(event.ChatID))
 						}
@@ -116,13 +125,14 @@ func (s *cliState) runCommand() *cobra.Command {
 				ticker := time.NewTicker(2 * time.Second)
 				defer ticker.Stop()
 				for {
-					receipts, err := sendPendingActiveReadReceipts(ctx, store, chatTransport, cfg, 20)
+					tickCfg := liveCfg.Load()
+					receipts, err := sendPendingActiveReadReceipts(ctx, store, chatTransport, tickCfg, 20)
 					if err != nil {
 						fmt.Printf("[active-read] error=%s\n", err)
 					} else if receipts > 0 {
 						fmt.Printf("[active-read] sent=%d\n", receipts)
 					}
-					sent, err := sendPendingActiveOutbox(ctx, store, chatTransport, cfg, 20)
+					sent, err := sendPendingActiveOutbox(ctx, store, chatTransport, tickCfg, 20)
 					if err != nil {
 						fmt.Printf("[active-outbox] error=%s\n", err)
 					} else if sent > 0 {
@@ -162,6 +172,10 @@ func (s *cliState) runCommand() *cobra.Command {
 			if err := chatTransport.Connect(ctx); err != nil {
 				return err
 			}
+			// Group events can arrive (and archive groups) as soon as the
+			// transport is connected, so load one coherent snapshot for the
+			// whole startup pass instead of reading the shared variable.
+			cfg = liveCfg.Load()
 			status, _ := chatTransport.Status(ctx)
 			fmt.Printf("[connected] profile=%s account=%q %s\n", cfg.App.Profile, logging.Redact(status.Account), status.Detail)
 			fmt.Printf("[watching] %d allowed groups\n", len(enabledGroups(cfg.Groups)))
@@ -204,6 +218,50 @@ func (s *cliState) runCommand() *cobra.Command {
 	cmd.Flags().StringVar(&profile, "profile", "", "profile name")
 	cmd.Flags().BoolVar(&takeover, "takeover", false, "take over the messenger connection from an already-running daemon (stops the incumbent)")
 	return cmd
+}
+
+// runConfigHolder shares the run daemon's live config between goroutines,
+// mirroring the router's atomic.Pointer[config.Config] approach: Store
+// publishes a new snapshot atomically and Load returns a private copy, so a
+// concurrent swap can never tear a read of the large config.Config struct and
+// callers cannot mutate the shared snapshot through reference-typed fields.
+type runConfigHolder struct {
+	ptr atomic.Pointer[config.Config]
+}
+
+func newRunConfigHolder(cfg config.Config) *runConfigHolder {
+	holder := &runConfigHolder{}
+	holder.Store(cfg)
+	return holder
+}
+
+func (h *runConfigHolder) Load() config.Config {
+	cfg := h.ptr.Load()
+	if cfg == nil {
+		return config.Config{}
+	}
+	return cloneRunConfig(*cfg)
+}
+
+func (h *runConfigHolder) Store(cfg config.Config) {
+	snapshot := cloneRunConfig(cfg)
+	h.ptr.Store(&snapshot)
+}
+
+func cloneRunConfig(cfg config.Config) config.Config {
+	cfg.Groups = slices.Clone(cfg.Groups)
+	cfg.Security.AdminSenderIDs = slices.Clone(cfg.Security.AdminSenderIDs)
+	cfg.Security.AllowedSenderIDs = slices.Clone(cfg.Security.AllowedSenderIDs)
+	if cfg.Runner != nil {
+		runners := make(map[string]config.RunnerConfig, len(cfg.Runner))
+		for id, runnerCfg := range cfg.Runner {
+			runnerCfg.Args = slices.Clone(runnerCfg.Args)
+			runnerCfg.Env = maps.Clone(runnerCfg.Env)
+			runners[id] = runnerCfg
+		}
+		cfg.Runner = runners
+	}
+	return cfg
 }
 
 func sendPendingActiveOutbox(ctx context.Context, store *db.Store, chatTransport transport.ChatTransport, cfg config.Config, limit int) (int, error) {
@@ -283,6 +341,10 @@ func handleRelayGroupLifecycleEvent(ctx context.Context, cfg config.Config, conf
 	group.Archived = true
 	group.ArchivedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	group.ArchiveReason = reason
+	// Replace, never mutate: cfg.Groups shares its backing array with the
+	// caller's snapshot (and any other goroutine still reading it), so write
+	// the archived entry into a fresh clone instead of the shared array.
+	cfg.Groups = slices.Clone(cfg.Groups)
 	cfg.Groups[groupIndex] = group
 	if err := config.Save(configPath, cfg); err != nil {
 		return cfg, false, err
