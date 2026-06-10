@@ -144,7 +144,9 @@ jobs:
           done
 
       - name: Notarize macOS binaries
-        if: runner.os == 'macOS' && env.APPLE_ID != '' && env.APPLE_APP_SPECIFIC_PASSWORD != '' && env.APPLE_TEAM_ID != ''
+        # Also require the signing secrets: notarizing unsigned binaries fails,
+        # so skip notarization unless the sign step above actually ran.
+        if: runner.os == 'macOS' && env.APPLE_ID != '' && env.APPLE_APP_SPECIFIC_PASSWORD != '' && env.APPLE_TEAM_ID != '' && env.APPLE_CERTIFICATE_BASE64 != '' && env.APPLE_DEVELOPER_ID != ''
         shell: bash
         run: |
           set -euo pipefail
@@ -266,7 +268,11 @@ jobs:
 
           (
             cd "${release_dir}"
-            shasum -a 256 * | sort -k2 > checksums.txt
+            # Hash to a temp file outside the glob, then move it into place:
+            # redirecting straight to checksums.txt can create the file before
+            # the glob expands, producing a bogus self-entry.
+            shasum -a 256 * | sort -k2 > ../checksums.txt.tmp
+            mv ../checksums.txt.tmp checksums.txt
           )
 
           cat > "${release_dir}/RELEASE_NOTES.md" <<EOF

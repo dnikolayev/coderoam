@@ -89,20 +89,19 @@ If the secrets are missing, the release still builds unsigned archives.
 
 ## GitHub Release Workflow
 
-Tag pushes matching `v*` run `.github/workflows/release.yml`. The workflow uses
-native GitHub-hosted runners instead of cgo cross-compilation:
+Tag pushes matching `v*` run `.github/workflows/release.yml`. Every target
+cross-compiles with `CGO_ENABLED=0` (sqlite is pure Go via
+`modernc.org/sqlite`), so only two runner types are needed:
 
-- `macos-15` for darwin arm64
-- `macos-15-intel` for darwin amd64
-- `ubuntu-24.04` for linux amd64
-- `ubuntu-24.04-arm` for linux arm64
-- `windows-latest` for windows amd64
+- `macos-15` for darwin arm64 and darwin amd64 (codesign and notarytool only
+  run on macOS)
+- `ubuntu-24.04` for linux amd64, linux arm64, and windows amd64
 
 Each archive includes the user binaries, README, security/privacy docs, license
-notices, and `licenses/GPL-3.0.txt`. The publish job combines archives,
-generates `checksums.txt`, creates a CycloneDX SBOM, downloads the tagged source
-tarball, and renders the Homebrew-core candidate formula with the real source
-`sha256`.
+notices, and `licenses/GPL-3.0.txt`. A separate `sbom` job generates the
+CycloneDX SBOM. The publish job combines archives, generates `checksums.txt`,
+downloads the tagged source tarball, and renders the Homebrew-core candidate
+formula with the real source `sha256`.
 
 Use manual dispatch for dry-run packaging before a tag:
 

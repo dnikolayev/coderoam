@@ -406,6 +406,7 @@ and `coderoam` sends no WhatsApp message.
 Enabled by built-in presets:
 
 - `codex-active`
+- `codex-code`
 - `codex-session`
 - `claude`
 - `claude-code`
@@ -669,12 +670,27 @@ coderoam send --to "<your-phone-number>" --text "coderoam is ready"
 
 ## Storage
 
-Default paths:
+Default paths per OS:
 
-- macOS config: `~/Library/Application Support/coderoam/config.toml`
-- macOS app database: `~/Library/Application Support/coderoam/profiles/<profile>/coderoam.sqlite3`
-- macOS WhatsApp session database: `~/Library/Application Support/coderoam/profiles/<profile>/whatsapp-session.sqlite3`
-- macOS logs: `~/Library/Logs/coderoam/coderoam.log`
+macOS:
+
+- config: `~/Library/Application Support/coderoam/config.toml`
+- app database: `~/Library/Application Support/coderoam/profiles/<profile>/coderoam.sqlite3`
+- WhatsApp session database: `~/Library/Application Support/coderoam/profiles/<profile>/whatsapp-session.sqlite3`
+- logs: `~/Library/Logs/coderoam/coderoam.log`
+
+Linux (respects `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and `XDG_STATE_HOME` when
+set):
+
+- config: `~/.config/coderoam/config.toml`
+- app and session databases: `~/.local/share/coderoam/profiles/<profile>/`
+- logs: `~/.local/state/coderoam/coderoam.log`
+
+Windows:
+
+- config: `%APPDATA%\coderoam\config.toml`
+- app and session databases: `%APPDATA%\coderoam\profiles\<profile>\`
+- logs: `%LOCALAPPDATA%\coderoam\logs\coderoam.log`
 
 WhatsApp session material is stored outside the repository. Do not commit profile data or session databases.
 
