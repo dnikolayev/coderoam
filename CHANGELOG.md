@@ -6,6 +6,27 @@ protocols.
 
 ## Unreleased
 
+## v0.1.12 - 2026-06-10
+
+### Fixed
+
+- The run daemon now shares live config through deep-cloned snapshots, so group
+  lifecycle updates cannot race with read-receipt/outbox processing or leak
+  mutable runner and sender allowlist state between goroutines.
+- Unix run-lock acquisition now detects an unlinked/recreated lock file before
+  accepting the lock, and release warns when an outside actor replaced the lock
+  while held.
+- Windows takeover now fails fast with a clear unsupported message instead of
+  timing out through the generic lock-acquisition error.
+- Release checksums are now generated through a temporary file, avoiding a
+  possible `checksums.txt` self-entry, and macOS notarization is skipped unless
+  signing secrets are also present.
+
+### Tests
+
+- Added daemon config snapshot, run-lock stale-inode, run-lock eviction warning,
+  and Windows takeover refusal regression coverage.
+
 ## v0.1.11 - 2026-06-09
 
 ### Fixed

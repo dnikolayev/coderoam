@@ -741,7 +741,7 @@ and `coderoam logs tail` are the first diagnostics to run. See
 
 ## Status
 
-Current implementation: v0.1.11 parallel mobile agent sessions.
+Current implementation: v0.1.12 parallel mobile agent sessions.
 
 Project maturity: early MVP. The public API, config shape, database schema, and
 runner protocol can still change before v1.0.
