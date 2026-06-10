@@ -15,6 +15,70 @@ Security and privacy: read [SECURITY.md](SECURITY.md) and
 [PRIVACY.md](PRIVACY.md) before linking an account. All state is local: the
 config, message database, and WhatsApp session files stay on your machine.
 
+## Install
+
+Copy-paste on macOS or Linux with [Homebrew](https://brew.sh) installed:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/dnikolayev/coderoam/main/scripts/install.sh | sh
+```
+
+That installs the latest stable tagged release and prints the short setup
+guide. Without Homebrew, use a release archive or source build from the
+platform section below. Pass `--head` only when you intentionally want the
+moving `main` branch build.
+
+If you prefer not to run a remote script, read
+[`scripts/install.sh`](scripts/install.sh) and run the Homebrew commands in
+[`docs/HOMEBREW.md`](docs/HOMEBREW.md) manually:
+
+```sh
+brew tap dnikolayev/coderoam https://github.com/dnikolayev/coderoam.git
+brew install dnikolayev/coderoam/coderoam
+```
+
+Binary name convention: Homebrew installs put `coderoam` on PATH; a source
+checkout builds `./bin/coderoam`. Examples in this README use `coderoam`.
+
+## Quick Start
+
+Most users need this flow:
+
+```sh
+coderoam setup
+coderoam doctor
+coderoam run
+```
+
+`coderoam setup` configures an agent, asks which WhatsApp numbers are allowed,
+requires you to confirm those numbers exactly, links WhatsApp with QR if needed,
+and creates a dedicated session group.
+
+For docs, scripts, or a non-interactive preview:
+
+```sh
+coderoam setup --print --agent codex --workdir /path/to/workspace --session-id codex-session
+```
+
+Use one WhatsApp group per active coding session. Codex and Claude should have
+different group chats and different session ids, for example `codex-session`
+and `claude-session`; `coderoam` rejects active-session configs that cross those
+wires.
+
+## Common How-Tos
+
+| I want to... | Start here |
+| ------------ | ---------- |
+| Install and create the first mobile coding chat | `coderoam setup` |
+| Continue Codex from WhatsApp | `coderoam setup --agent codex --workdir /path/to/workspace --session-id codex-session` |
+| Continue Claude from WhatsApp | `coderoam setup --agent claude --workdir /path/to/workspace --session-id claude-session` |
+| Add a second isolated session | `coderoam active start --name "Claude Session" --participants "+15550001111" --alias claude-session --session-id claude-session --runner claude-code --yes` |
+| Check whether messages are queued | `coderoam active status` |
+| Pull WhatsApp messages into the current terminal session | `coderoam inbox drain --format prompt --session-id <session-id>` |
+| Send an important update back to the group | `coderoam notify --chat <session-id> --important --text "Update..."` |
+| Enable voice notes, images, or screenshots | See [Media](#media-voice-notes-images-screenshots) |
+| Debug a missing response | Start with `coderoam doctor`, then see [Troubleshooting](#troubleshooting) |
+
 ## Account risk: read this before installing
 
 This project is a local personal automation bridge. It is not affiliated with,
@@ -38,32 +102,7 @@ stalkerware, or contacting people without consent.
   `gemini`, `opencode`. None of them is required to install or test the bridge,
   and any other CLI agent works through the generic runner wrapper.
 
-## Install
-
-Copy-paste on macOS or Linux with [Homebrew](https://brew.sh) installed (without
-Homebrew, use a release archive or source build - see the platform table below):
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/dnikolayev/coderoam/main/scripts/install.sh | sh
-```
-
-That installs `coderoam` and prints the short setup guide. The installer uses
-the latest stable tagged release by default; pass `--head` only when you
-intentionally want the moving `main` branch build.
-
-If you prefer not to run a remote script, read
-[`scripts/install.sh`](scripts/install.sh) and run the Homebrew commands in
-[`docs/HOMEBREW.md`](docs/HOMEBREW.md) manually:
-
-```sh
-brew tap dnikolayev/coderoam https://github.com/dnikolayev/coderoam.git
-brew install dnikolayev/coderoam/coderoam
-```
-
-Binary name convention: Homebrew installs put `coderoam` on PATH; a source
-checkout builds `./bin/coderoam`. Examples in this README use `coderoam`.
-
-### Platform support
+## Platform Support
 
 | Platform                    | Release binaries | Recommended install             |
 | --------------------------- | ---------------- | ------------------------------- |
@@ -76,7 +115,7 @@ checkout builds `./bin/coderoam`. Examples in this README use `coderoam`.
 Release archives are published for every tagged release with checksums and an
 SBOM. Other platforms build from source with the Go version in `go.mod`.
 
-### Build from source
+## Build From Source
 
 ```sh
 go build -o bin/coderoam ./cmd/coderoam
@@ -87,7 +126,7 @@ go build -o bin/codex-runner ./examples/codex-runner
 go build -o bin/claude-runner ./examples/claude-runner
 ```
 
-## First Run
+## Setup Details
 
 ```sh
 coderoam setup
@@ -741,7 +780,7 @@ and `coderoam logs tail` are the first diagnostics to run. See
 
 ## Status
 
-Current implementation: v0.1.12 parallel mobile agent sessions.
+Current implementation: v0.1.13 parallel mobile agent sessions.
 
 Project maturity: early MVP. The public API, config shape, database schema, and
 runner protocol can still change before v1.0.

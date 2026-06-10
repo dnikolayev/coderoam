@@ -6,6 +6,27 @@ protocols.
 
 ## Unreleased
 
+## v0.1.13 - 2026-06-10
+
+### Changed
+
+- Moved install, quick-start, and common how-to commands near the top of the
+  README so new users can install and create a mobile coding chat without
+  scrolling through detailed reference sections first.
+
+### Fixed
+
+- Active-session configuration now rejects one session id or alias being shared
+  by multiple WhatsApp groups, and rejects one group being configured for
+  multiple active sessions. This prevents Codex, Claude, Gemini, OpenCode, or
+  other agent lanes from reading each other's WhatsApp queues.
+
+### Tests
+
+- Added CLI and config regression coverage for duplicate active-session ids,
+  duplicate active aliases, duplicate chat/session bindings, invalid hand-edited
+  configs, and Codex/Claude queue isolation probes.
+
 ## v0.1.12 - 2026-06-10
 
 ### Fixed

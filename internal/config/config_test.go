@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -89,5 +90,69 @@ func TestValidateRunnerAllowsProcessJSONL(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("ValidateRunner returned error: %v", err)
+	}
+}
+
+func TestValidateActiveSessionBindingsRejectsOneSessionForMultipleChats(t *testing.T) {
+	t.Parallel()
+	cfg := Default()
+	cfg.Groups = []GroupConfig{
+		{ID: "chat-a@g.us", Alias: "codex-a", Mode: GroupModeActiveSession, ActiveSessionID: "codex-session", Enabled: true},
+		{ID: "chat-b@g.us", Alias: "codex-b", Mode: GroupModeActiveSession, ActiveSessionID: "codex-session", Enabled: true},
+	}
+	err := ValidateActiveSessionBindings(cfg)
+	if err == nil || !strings.Contains(err.Error(), "active session id codex-session is configured for multiple chats") {
+		t.Fatalf("error = %v, want duplicate session guard", err)
+	}
+}
+
+func TestValidateActiveSessionBindingsRejectsOneAliasForMultipleChats(t *testing.T) {
+	t.Parallel()
+	cfg := Default()
+	cfg.Groups = []GroupConfig{
+		{ID: "chat-a@g.us", Alias: "shared", Mode: GroupModeActiveSession, ActiveSessionID: "session-a", Enabled: true},
+		{ID: "chat-b@g.us", Alias: "shared", Mode: GroupModeActiveSession, ActiveSessionID: "session-b", Enabled: true},
+	}
+	err := ValidateActiveSessionBindings(cfg)
+	if err == nil || !strings.Contains(err.Error(), "active group alias shared is configured for multiple chats") {
+		t.Fatalf("error = %v, want duplicate alias guard", err)
+	}
+}
+
+func TestValidateActiveSessionBindingsRejectsOneChatForMultipleSessions(t *testing.T) {
+	t.Parallel()
+	cfg := Default()
+	cfg.Groups = []GroupConfig{
+		{ID: "chat-a@g.us", Alias: "session-a", Mode: GroupModeActiveSession, ActiveSessionID: "session-a", Enabled: true},
+		{ID: "chat-a@g.us", Alias: "session-b", Mode: GroupModeActiveSession, ActiveSessionID: "session-b", Enabled: true},
+	}
+	err := ValidateActiveSessionBindings(cfg)
+	if err == nil || !strings.Contains(err.Error(), "chat chat-a@g.us is configured for multiple active sessions") {
+		t.Fatalf("error = %v, want duplicate chat guard", err)
+	}
+}
+
+func TestValidateActiveSessionBindingsIgnoresDisabledAndArchivedGroups(t *testing.T) {
+	t.Parallel()
+	cfg := Default()
+	cfg.Groups = []GroupConfig{
+		{ID: "old-a@g.us", Alias: "codex-old", Mode: GroupModeActiveSession, ActiveSessionID: "codex-session", Enabled: false, RelayManaged: true, Archived: true},
+		{ID: "chat-a@g.us", Alias: "codex", Mode: GroupModeActiveSession, ActiveSessionID: "codex-session", Enabled: true},
+	}
+	if err := ValidateActiveSessionBindings(cfg); err != nil {
+		t.Fatalf("ValidateActiveSessionBindings returned error: %v", err)
+	}
+}
+
+func TestSaveRejectsDuplicateActiveSessionBindings(t *testing.T) {
+	t.Parallel()
+	cfg := Default()
+	cfg.Groups = []GroupConfig{
+		{ID: "chat-a@g.us", Alias: "codex-a", Mode: GroupModeActiveSession, ActiveSessionID: "codex-session", Enabled: true},
+		{ID: "chat-b@g.us", Alias: "codex-b", Mode: GroupModeActiveSession, ActiveSessionID: "codex-session", Enabled: true},
+	}
+	err := Save(filepath.Join(t.TempDir(), "config.toml"), cfg)
+	if err == nil || !strings.Contains(err.Error(), "active session id codex-session is configured for multiple chats") {
+		t.Fatalf("error = %v, want duplicate session save guard", err)
 	}
 }

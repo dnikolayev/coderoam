@@ -233,6 +233,9 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	ApplyDefaults(&cfg)
+	if err := ValidateActiveSessionBindings(cfg); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
 }
 
@@ -256,6 +259,9 @@ func Save(path string, cfg Config) error {
 		path = DefaultConfigPath()
 	}
 	ApplyDefaults(&cfg)
+	if err := ValidateActiveSessionBindings(cfg); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -474,6 +480,43 @@ func UpsertActiveSessionGroup(cfg *Config, group GroupConfig) {
 		}
 	}
 	cfg.Groups = append(cfg.Groups, group)
+}
+
+func ValidateActiveSessionBindings(cfg Config) error {
+	chatSessions := map[string]string{}
+	aliasChats := map[string]string{}
+	sessionChats := map[string]string{}
+	for _, group := range cfg.Groups {
+		if group.Mode != GroupModeActiveSession || !group.Enabled {
+			continue
+		}
+		chatID := strings.TrimSpace(group.ID)
+		if chatID == "" {
+			return fmt.Errorf("active session group has empty chat id")
+		}
+		sessionID := ActiveSessionID(group)
+		if sessionID == "" {
+			return fmt.Errorf("active session group %s has empty session id", chatID)
+		}
+		if previousSession, ok := chatSessions[chatID]; ok {
+			if previousSession == sessionID {
+				return fmt.Errorf("chat %s is configured more than once for active session %s", chatID, sessionID)
+			}
+			return fmt.Errorf("chat %s is configured for multiple active sessions (%s and %s)", chatID, previousSession, sessionID)
+		}
+		chatSessions[chatID] = sessionID
+		if alias := strings.TrimSpace(group.Alias); alias != "" {
+			if previousChat, ok := aliasChats[alias]; ok && previousChat != chatID {
+				return fmt.Errorf("active group alias %s is configured for multiple chats (%s and %s)", alias, previousChat, chatID)
+			}
+			aliasChats[alias] = chatID
+		}
+		if previousChat, ok := sessionChats[sessionID]; ok && previousChat != chatID {
+			return fmt.Errorf("active session id %s is configured for multiple chats (%s and %s)", sessionID, previousChat, chatID)
+		}
+		sessionChats[sessionID] = chatID
+	}
+	return nil
 }
 
 func DenyGroup(cfg *Config, chatID string) bool {

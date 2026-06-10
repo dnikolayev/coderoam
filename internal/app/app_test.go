@@ -1600,6 +1600,82 @@ func TestActiveEnableManagedPreservesRunner(t *testing.T) {
 	}
 }
 
+func TestActiveEnableRejectsDuplicateActiveSessionID(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Transport.Type = "fake"
+	cfg.Groups = []config.GroupConfig{{
+		ID:              "codex-chat@g.us",
+		Alias:           "codex-session",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "codex-session",
+		Enabled:         true,
+	}}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	state := &cliState{configPath: path}
+	cmd := state.activeCommand()
+	cmd.SetArgs([]string{
+		"enable",
+		"other-chat@g.us",
+		"--alias", "codex-other",
+		"--session-id", "codex-session",
+	})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "active session id codex-session is configured for multiple chats") {
+		t.Fatalf("error = %v, want duplicate session guard", err)
+	}
+	updated, loadErr := config.Load(path)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if len(updated.Groups) != 1 || updated.Groups[0].ID != "codex-chat@g.us" {
+		t.Fatalf("groups after failed enable = %+v", updated.Groups)
+	}
+}
+
+func TestActiveEnableRejectsDuplicateActiveAlias(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Transport.Type = "fake"
+	cfg.Groups = []config.GroupConfig{{
+		ID:              "codex-chat@g.us",
+		Alias:           "shared-session",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "codex-session",
+		Enabled:         true,
+	}}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	state := &cliState{configPath: path}
+	cmd := state.activeCommand()
+	cmd.SetArgs([]string{
+		"enable",
+		"claude-chat@g.us",
+		"--alias", "shared-session",
+		"--session-id", "claude-session",
+	})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "active group alias shared-session is configured for multiple chats") {
+		t.Fatalf("error = %v, want duplicate alias guard", err)
+	}
+	updated, loadErr := config.Load(path)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if len(updated.Groups) != 1 || updated.Groups[0].ID != "codex-chat@g.us" {
+		t.Fatalf("groups after failed enable = %+v", updated.Groups)
+	}
+}
+
 func TestActiveEnableRejectsArchivedManagedGroup(t *testing.T) {
 	t.Parallel()
 	cfg := config.Default()
