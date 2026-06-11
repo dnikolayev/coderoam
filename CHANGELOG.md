@@ -6,6 +6,15 @@ protocols.
 
 ## Unreleased
 
+## v0.1.15 - 2026-06-11
+
+### Changed
+
+- Updated the WhatsApp Web transport dependency to the latest available
+  whatsmeow snapshot and verified reconnect/auth plus outbox sending with the
+  local WhatsApp daemon.
+- Updated `golang.org/x/sys` and the GitHub Actions golangci-lint action.
+
 ## v0.1.14 - 2026-06-11
 
 ### Changed

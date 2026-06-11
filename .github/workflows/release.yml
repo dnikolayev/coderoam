@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version label for a dry-run build, for example v0.1.14
+        description: Version label for a dry-run build, for example v0.1.15
         required: false
-        default: v0.1.14
+        default: v0.1.15
 
 permissions:
   contents: write
@@ -87,7 +87,7 @@ jobs:
 
           version="${GITHUB_REF_NAME}"
           if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
-            version="${DISPATCH_VERSION:-v0.1.14}"
+            version="${DISPATCH_VERSION:-v0.1.15}"
           fi
           clean_version="${version#v}"
           commit="$(git rev-parse --short=12 HEAD)"
@@ -207,7 +207,7 @@ jobs:
 
           version="${GITHUB_REF_NAME}"
           if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
-            version="${DISPATCH_VERSION:-v0.1.14}"
+            version="${DISPATCH_VERSION:-v0.1.15}"
           fi
           clean_version="${version#v}"
 
@@ -248,7 +248,7 @@ jobs:
 
           version="${GITHUB_REF_NAME}"
           if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
-            version="${DISPATCH_VERSION:-v0.1.14}"
+            version="${DISPATCH_VERSION:-v0.1.15}"
           fi
           clean_version="${version#v}"
           release_dir="dist/release"
