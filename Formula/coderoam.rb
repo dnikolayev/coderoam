@@ -1,8 +1,8 @@
 class Coderoam < Formula
   desc "Run each AI coding session in its own mobile group chat"
   homepage "https://github.com/dnikolayev/coderoam"
-  url "https://github.com/dnikolayev/coderoam/archive/refs/tags/v0.1.13.tar.gz"
-  sha256 "8b93a6f00d00f524a0819f033ad87aba3b45916c51d96febf7951f0cc6b1e546"
+  url "https://github.com/dnikolayev/coderoam/archive/refs/tags/v0.1.14.tar.gz"
+  sha256 "6ace4900257edd1dbdb058640337a0505a3583849f2b7a5bb1f0231cadc2cb41"
   license all_of: ["MIT", "GPL-3.0-only"]
 
   head "https://github.com/dnikolayev/coderoam.git", branch: "main"
@@ -10,8 +10,7 @@ class Coderoam < Formula
   depends_on "go" => :build
 
   def install
-    build_version = build.head? ? "HEAD" : version.to_s
-    ldflags = "-s -w -X github.com/dnikolayev/coderoam/internal/app.version=#{build_version}"
+    ldflags = "-s -w -X github.com/dnikolayev/coderoam/internal/app.version=#{version}"
 
     system "go", "build", *std_go_args(ldflags: ldflags), "./cmd/coderoam"
     system "go", "build", "-o", bin/"coderoam-transcribe", "./cmd/coderoam-transcribe"
