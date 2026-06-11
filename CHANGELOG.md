@@ -6,6 +6,13 @@ protocols.
 
 ## Unreleased
 
+## v0.1.14 - 2026-06-11
+
+### Changed
+
+- Removed legacy runtime-name compatibility: all binaries now use coderoam
+  config, data, database, and log paths.
+
 ## v0.1.13 - 2026-06-10
 
 ### Changed
@@ -203,8 +210,6 @@ protocols.
   before the active turn consumes them.
 - Pending runner interactions now accept option numbers, option text, custom
   free-form answers, and transcribed voice-note answers.
-- Local `chat-bridge` binaries keep using legacy `chat-bridge` config, data,
-  database, and log paths while `coderoam` binaries use `coderoam` paths.
 
 ### Fixed
 

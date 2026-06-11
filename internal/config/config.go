@@ -13,7 +13,6 @@ import (
 )
 
 const AppName = "coderoam"
-const legacyAppName = "chat-bridge"
 
 const (
 	GroupModeRunner        = "runner"
@@ -338,9 +337,6 @@ func ApplyDefaults(cfg *Config) {
 }
 
 func RuntimeAppName() string {
-	if strings.Contains(filepath.Base(os.Args[0]), legacyAppName) {
-		return legacyAppName
-	}
 	return AppName
 }
 

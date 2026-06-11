@@ -106,7 +106,7 @@ formula with the real source `sha256`.
 Use manual dispatch for dry-run packaging before a tag:
 
 ```sh
-gh workflow run release.yml -f version=v0.1.13
+gh workflow run release.yml -f version=v0.1.14
 ```
 
 Manual dispatch does not create a GitHub release or a final Homebrew-core

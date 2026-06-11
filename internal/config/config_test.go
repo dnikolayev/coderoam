@@ -7,19 +7,19 @@ import (
 	"testing"
 )
 
-func TestRuntimeAppNameUsesLegacyNameForChatBridgeBinary(t *testing.T) {
+func TestRuntimeAppNameUsesCoderoamForOldBinaryNames(t *testing.T) {
 	originalArgs := os.Args
 	t.Cleanup(func() { os.Args = originalArgs })
 
-	os.Args = []string{"/tmp/chat-bridge"}
-	if got := RuntimeAppName(); got != "chat-bridge" {
-		t.Fatalf("RuntimeAppName() = %q, want chat-bridge", got)
+	os.Args = []string{"/tmp/old-binary-name"}
+	if got := RuntimeAppName(); got != AppName {
+		t.Fatalf("RuntimeAppName() = %q, want %s", got, AppName)
 	}
-	if got := Default().App.DatabasePath; got != "chat-bridge.sqlite3" {
-		t.Fatalf("Default database = %q, want chat-bridge.sqlite3", got)
+	if got := Default().App.DatabasePath; got != "coderoam.sqlite3" {
+		t.Fatalf("Default database = %q, want coderoam.sqlite3", got)
 	}
-	if got := DefaultConfigPath(); !strings.Contains(got, "chat-bridge") {
-		t.Fatalf("DefaultConfigPath() = %q, want legacy chat-bridge path", got)
+	if got := DefaultConfigPath(); !strings.Contains(got, "coderoam") {
+		t.Fatalf("DefaultConfigPath() = %q, want coderoam path", got)
 	}
 }
 
