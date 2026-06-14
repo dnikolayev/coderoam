@@ -68,11 +68,8 @@ func (s *cliState) runCommand() *cobra.Command {
 			defer chatTransport.Close(context.Background())
 			bridgeRouter := router.New(cfg, store, chatTransport)
 			defer bridgeRouter.Stop(context.Background())
-			queueDepth := cfg.Concurrency.QueueMaxDepthPerGroup
-			if queueDepth <= 0 {
-				queueDepth = 50
-			}
-			messages := make(chan types.IncomingMessage, queueDepth)
+			queueDepth := runQueueDepth(cfg)
+			messages := make(chan types.IncomingMessage, queueDepth*runMaxInflight(cfg))
 			groupEvents := make(chan types.GroupEvent, queueDepth)
 			// liveCfg hands the config between the run loop's goroutines: the
 			// group-events worker stores a fresh snapshot when a relay group is
@@ -84,17 +81,16 @@ func (s *cliState) runCommand() *cobra.Command {
 			workers.Add(1)
 			go func() {
 				defer workers.Done()
+				dispatcher := newRunMessageDispatcher(ctx, bridgeRouter, cfg, func(format string, args ...any) {
+					fmt.Printf(format, args...)
+				})
+				defer dispatcher.Stop()
 				for {
 					select {
 					case <-ctx.Done():
 						return
 					case msg := <-messages:
-						result := bridgeRouter.Handle(ctx, msg)
-						if result.Ignored {
-							fmt.Printf("[ignored] chat=%s reason=%s\n", logging.Redact(msg.ChatID), result.Reason)
-							continue
-						}
-						fmt.Printf("[processed] chat=%s replies=%d\n", logging.Redact(msg.ChatID), len(result.Sent))
+						dispatcher.Dispatch(msg)
 					}
 				}
 			}()
@@ -264,11 +260,184 @@ func cloneRunConfig(cfg config.Config) config.Config {
 	return cfg
 }
 
+type runIncomingHandler interface {
+	Handle(context.Context, types.IncomingMessage) router.ProcessResult
+}
+
+type runMessageDispatcher struct {
+	ctx         context.Context
+	cancel      context.CancelFunc
+	handler     runIncomingHandler
+	logf        func(string, ...any)
+	queueDepth  int
+	globalSlots chan struct{}
+
+	mu     sync.Mutex
+	groups map[string]chan types.IncomingMessage
+	wg     sync.WaitGroup
+}
+
+func newRunMessageDispatcher(ctx context.Context, handler runIncomingHandler, cfg config.Config, logf func(string, ...any)) *runMessageDispatcher {
+	dispatchCtx, cancel := context.WithCancel(ctx)
+	return &runMessageDispatcher{
+		ctx:         dispatchCtx,
+		cancel:      cancel,
+		handler:     handler,
+		logf:        logf,
+		queueDepth:  runQueueDepth(cfg),
+		globalSlots: make(chan struct{}, runMaxInflight(cfg)),
+		groups:      map[string]chan types.IncomingMessage{},
+	}
+}
+
+func runQueueDepth(cfg config.Config) int {
+	if cfg.Concurrency.QueueMaxDepthPerGroup > 0 {
+		return cfg.Concurrency.QueueMaxDepthPerGroup
+	}
+	return 50
+}
+
+func runMaxInflight(cfg config.Config) int {
+	if cfg.Concurrency.GlobalMaxInflight > 0 {
+		return cfg.Concurrency.GlobalMaxInflight
+	}
+	if cfg.RateLimits.MaxParallelGroups > 0 {
+		return cfg.RateLimits.MaxParallelGroups
+	}
+	return 5
+}
+
+func (d *runMessageDispatcher) Dispatch(msg types.IncomingMessage) bool {
+	select {
+	case <-d.ctx.Done():
+		return false
+	default:
+	}
+	queue := d.groupQueue(msg.ChatID)
+	select {
+	case <-d.ctx.Done():
+		return false
+	case queue <- msg:
+		return true
+	default:
+		d.logResult(msg, router.ProcessResult{Ignored: true, Reason: "message queue full"})
+		return false
+	}
+}
+
+func (d *runMessageDispatcher) Stop() {
+	d.cancel()
+	d.wg.Wait()
+}
+
+func (d *runMessageDispatcher) groupQueue(chatID string) chan types.IncomingMessage {
+	if chatID == "" {
+		chatID = "<empty-chat-id>"
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if queue, ok := d.groups[chatID]; ok {
+		return queue
+	}
+	queue := make(chan types.IncomingMessage, d.queueDepth)
+	d.groups[chatID] = queue
+	d.wg.Add(1)
+	go d.runGroup(queue)
+	return queue
+}
+
+func (d *runMessageDispatcher) runGroup(queue <-chan types.IncomingMessage) {
+	defer d.wg.Done()
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case msg := <-queue:
+			if !d.acquireSlot() {
+				return
+			}
+			result := d.handler.Handle(d.ctx, msg)
+			d.releaseSlot()
+			d.logResult(msg, result)
+		}
+	}
+}
+
+func (d *runMessageDispatcher) acquireSlot() bool {
+	select {
+	case <-d.ctx.Done():
+		return false
+	case d.globalSlots <- struct{}{}:
+		return true
+	}
+}
+
+func (d *runMessageDispatcher) releaseSlot() {
+	select {
+	case <-d.globalSlots:
+	default:
+	}
+}
+
+func (d *runMessageDispatcher) logResult(msg types.IncomingMessage, result router.ProcessResult) {
+	if d.logf == nil {
+		return
+	}
+	if result.Ignored {
+		d.logf("[ignored] chat=%s reason=%s\n", logging.Redact(msg.ChatID), result.Reason)
+		return
+	}
+	d.logf("[processed] chat=%s replies=%d\n", logging.Redact(msg.ChatID), len(result.Sent))
+}
+
 func sendPendingActiveOutbox(ctx context.Context, store *db.Store, chatTransport transport.ChatTransport, cfg config.Config, limit int) (int, error) {
 	records, err := store.PendingActiveOutbox(ctx, cfg.App.Profile, limit)
 	if err != nil {
 		return 0, err
 	}
+	return sendActiveOutboxBatches(ctx, store, chatTransport, cfg, activeOutboxBatches(records))
+}
+
+func sendActiveOutboxBatches(ctx context.Context, store *db.Store, chatTransport transport.ChatTransport, cfg config.Config, batches [][]db.ActiveOutboxRecord) (int, error) {
+	if len(batches) == 0 {
+		return 0, nil
+	}
+	slots := make(chan struct{}, runMaxInflight(cfg))
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	sent := 0
+	var firstErr error
+	var launchErr error
+launch:
+	for _, batch := range batches {
+		select {
+		case <-ctx.Done():
+			launchErr = ctx.Err()
+			break launch
+		case slots <- struct{}{}:
+		}
+		batch := batch
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-slots }()
+			batchSent, err := sendActiveOutboxBatch(ctx, store, chatTransport, cfg, batch)
+			mu.Lock()
+			sent += batchSent
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return sent, firstErr
+	}
+	return sent, launchErr
+}
+
+func sendActiveOutboxBatch(ctx context.Context, store *db.Store, chatTransport transport.ChatTransport, cfg config.Config, records []db.ActiveOutboxRecord) (int, error) {
 	sent := 0
 	for _, record := range records {
 		if _, err := chatTransport.SendText(ctx, record.ChatID, record.Text, types.SendOptions{TypingIndicator: cfg.Reply.TypingIndicator}); err != nil {
@@ -290,6 +459,49 @@ func sendPendingActiveReadReceipts(ctx context.Context, store *db.Store, chatTra
 	if err != nil {
 		return 0, err
 	}
+	return sendActiveReadReceiptBatches(ctx, store, chatTransport, cfg, activeReadReceiptBatches(records))
+}
+
+func sendActiveReadReceiptBatches(ctx context.Context, store *db.Store, chatTransport transport.ChatTransport, cfg config.Config, batches [][]db.ActiveReadReceiptRecord) (int, error) {
+	if len(batches) == 0 {
+		return 0, nil
+	}
+	slots := make(chan struct{}, runMaxInflight(cfg))
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	sent := 0
+	var firstErr error
+	var launchErr error
+launch:
+	for _, batch := range batches {
+		select {
+		case <-ctx.Done():
+			launchErr = ctx.Err()
+			break launch
+		case slots <- struct{}{}:
+		}
+		batch := batch
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-slots }()
+			batchSent, err := sendActiveReadReceiptBatch(ctx, store, chatTransport, batch)
+			mu.Lock()
+			sent += batchSent
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return sent, firstErr
+	}
+	return sent, launchErr
+}
+
+func sendActiveReadReceiptBatch(ctx context.Context, store *db.Store, chatTransport transport.ChatTransport, records []db.ActiveReadReceiptRecord) (int, error) {
 	sent := 0
 	for _, record := range records {
 		msg := types.IncomingMessage{
@@ -309,6 +521,36 @@ func sendPendingActiveReadReceipts(ctx context.Context, store *db.Store, chatTra
 		sent++
 	}
 	return sent, nil
+}
+
+func activeOutboxBatches(records []db.ActiveOutboxRecord) [][]db.ActiveOutboxRecord {
+	positions := map[string]int{}
+	batches := [][]db.ActiveOutboxRecord{}
+	for _, record := range records {
+		index, ok := positions[record.ChatID]
+		if !ok {
+			index = len(batches)
+			positions[record.ChatID] = index
+			batches = append(batches, nil)
+		}
+		batches[index] = append(batches[index], record)
+	}
+	return batches
+}
+
+func activeReadReceiptBatches(records []db.ActiveReadReceiptRecord) [][]db.ActiveReadReceiptRecord {
+	positions := map[string]int{}
+	batches := [][]db.ActiveReadReceiptRecord{}
+	for _, record := range records {
+		index, ok := positions[record.ChatID]
+		if !ok {
+			index = len(batches)
+			positions[record.ChatID] = index
+			batches = append(batches, nil)
+		}
+		batches[index] = append(batches[index], record)
+	}
+	return batches
 }
 
 func handleRelayGroupLifecycleEvent(ctx context.Context, cfg config.Config, configPath string, store *db.Store, chatTransport transport.ChatTransport, event types.GroupEvent) (config.Config, bool, error) {

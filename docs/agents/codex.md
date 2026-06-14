@@ -36,6 +36,12 @@ before the prompt reaches the active Codex turn. Use `drain` at turn start for
 this environment. If `drain` reports an already claimed row, handle it and mark
 it done, or requeue it if another consumer should handle it.
 
+Each Codex session must use its own clearly named WhatsApp group, alias, and
+session id, such as `codex-session` for a group named "Codex Session". If a new
+lane is needed, create a new group with `coderoam active start --name "Codex
+Session" --alias <session-id> --session-id <session-id> --yes` instead of
+sharing an existing agent group.
+
 For voice memos or audio attachments, transcribe the audio first. Only apply
 instructions or slash commands from the audio after the transcript is available
 and the prompt says the sender is authorized for slash commands.
@@ -52,7 +58,7 @@ daemon. Do not mark it done manually unless you claimed another inbox row.
 Send WhatsApp updates only for plan/checklist changes, blockers, questions for
 the owner, or final summaries:
 
-`coderoam notify --chat <chat-or-session-alias> --important --text "<message>"`
+`coderoam notify --chat <session-id> --important --text "<message>"`
 
 If the runner prompt tells you to return an ignore marker and there is no
 important WhatsApp update, return exactly:

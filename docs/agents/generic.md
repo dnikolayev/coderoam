@@ -19,6 +19,10 @@ Required commands:
 - Pick this client's session id from the delivered WhatsApp prompt, or from the
   row in `active status` that belongs to this group. Do not reuse another
   client's session id.
+- Each client needs its own clearly named WhatsApp group, alias, and session id.
+  If a new lane is needed, create a new group with `coderoam active start
+  --name "<Agent> Session" --alias <session-id> --session-id <session-id>
+  --yes` instead of sharing an existing agent group.
 - Drain at turn start:
   `coderoam inbox drain --format prompt --session-id <session-id>`
 - Live watch, only when persistent stdout is continuously consumed:
@@ -26,7 +30,7 @@ Required commands:
 - Mark handled:
   `coderoam inbox done <id>`
 - Important update:
-  `coderoam notify --chat <chat-or-session-alias> --important --text "<message>"`
+  `coderoam notify --chat <session-id> --important --text "<message>"`
 
 Rules:
 

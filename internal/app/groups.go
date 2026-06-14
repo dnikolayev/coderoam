@@ -199,7 +199,7 @@ func (s *cliState) groupsCommand() *cobra.Command {
 	}
 
 	setRunner := &cobra.Command{
-		Use:   "set-runner <chat_id> <runner_id>",
+		Use:   "set-runner <chat_id> <runner_id|none>",
 		Short: "Change the runner used by an allowlisted group",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -207,13 +207,21 @@ func (s *cliState) groupsCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			runnerID := args[1]
-			if _, ok := cfg.Runner[runnerID]; !ok {
-				return fmt.Errorf("runner not configured: %s", runnerID)
-			}
+			runnerID := strings.TrimSpace(args[1])
+			clearRunner := isNoRunnerArg(runnerID)
 			for i := range cfg.Groups {
 				if cfg.Groups[i].ID == args[0] {
-					cfg.Groups[i].Runner = runnerID
+					if clearRunner {
+						if cfg.Groups[i].Mode != config.GroupModeActiveSession {
+							return fmt.Errorf("runner can only be cleared for active-session groups")
+						}
+						cfg.Groups[i].Runner = ""
+					} else {
+						if _, ok := cfg.Runner[runnerID]; !ok {
+							return fmt.Errorf("runner not configured: %s", runnerID)
+						}
+						cfg.Groups[i].Runner = runnerID
+					}
 					if cfg.Groups[i].Mode == "" {
 						cfg.Groups[i].Mode = config.GroupModeRunner
 					}
@@ -221,7 +229,7 @@ func (s *cliState) groupsCommand() *cobra.Command {
 					if err := config.Save(path, cfg); err != nil {
 						return err
 					}
-					fmt.Printf("group=%s runner=%s\n", args[0], runnerID)
+					fmt.Printf("group=%s runner=%s\n", args[0], nonEmpty(cfg.Groups[i].Runner, "-"))
 					return nil
 				}
 			}

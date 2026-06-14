@@ -12,17 +12,27 @@ Use this skill to keep Codex aligned with the local `coderoam` WhatsApp relay.
 At the start of a normal Codex turn in a relay-enabled workspace:
 
 1. Check relay status:
-   `rtk ./coderoam/bin/coderoam active status`
-2. Drain pending input:
-   `rtk ./coderoam/bin/coderoam inbox drain --format prompt --session-id codex-session`
-3. Treat any drained prompt blocks as user input.
-4. After handling each claimed row:
-   `rtk ./coderoam/bin/coderoam inbox done <id>`
+   `rtk ./bin/coderoam active status`
+2. Pick this client's session id from the delivered WhatsApp prompt, or from the
+   `active status` row for this client's dedicated group. Do not reuse another
+   client's group, alias, or session id.
+3. Drain pending input:
+   `rtk ./bin/coderoam inbox drain --format prompt --session-id <session-id>`
+4. Treat any drained prompt blocks as user input.
+5. After handling each claimed row:
+   `rtk ./bin/coderoam inbox done <id>`
 
 Use a watcher only when the environment can continuously read its stdout while
 idle:
 
-`rtk ./coderoam/bin/coderoam inbox watch --format prompt --session-id codex-session`
+`rtk ./bin/coderoam inbox watch --format prompt --session-id <session-id>`
+
+Each active client should have its own clearly named WhatsApp group and matching
+session alias, such as `codex-session`, `claude-session`, or
+`gemini-session`. If a new lane is needed, create a group instead of sharing an
+existing one:
+
+`rtk ./bin/coderoam active start --name "<Agent> Session" --alias <session-id> --session-id <session-id> --yes`
 
 Do not leave a watcher running in API-style Codex sessions that only read tool
 output during explicit tool calls. It can claim a WhatsApp row and trigger a
@@ -48,7 +58,7 @@ Send WhatsApp updates only for:
 
 Use:
 
-`rtk ./coderoam/bin/coderoam notify --chat codex-session --important --text "<message>"`
+`rtk ./bin/coderoam notify --chat <session-id> --important --text "<message>"`
 
 If a runner prompt requests an ignore marker and there is no important WhatsApp
 update, return exactly:

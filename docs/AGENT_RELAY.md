@@ -87,7 +87,6 @@ coderoam active start \
   --participants "+15550001111" \
   --alias claims-qa \
   --session-id claims-qa \
-  --runner codex-code \
   --yes
 ```
 

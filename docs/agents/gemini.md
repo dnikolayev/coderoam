@@ -18,6 +18,12 @@ Pick this client's session id from the delivered WhatsApp prompt, or from the
 row in `active status` that belongs to this Gemini group. Do not reuse another
 client's session id.
 
+Each Gemini session must use its own clearly named WhatsApp group, alias, and
+session id, such as `gemini-session` for a group named "Gemini Session". If a
+new lane is needed, create a new group with `coderoam active start --name
+"Gemini Session" --alias <session-id> --session-id <session-id> --yes` instead
+of sharing an existing agent group.
+
 Drain pending input at turn start and handoff:
 
 `coderoam inbox drain --format prompt --session-id <session-id>`
@@ -44,7 +50,7 @@ details; ask for a resend or media download.
 Send WhatsApp notifications only for important updates: plan/checklist changes,
 blockers, questions that require the owner, or final summaries.
 
-`coderoam notify --chat <chat-or-session-alias> --important --text "<message>"`
+`coderoam notify --chat <session-id> --important --text "<message>"`
 
 If the current turn came from a `coderoam` runner prompt with `Sender`,
 `Chat`, and `Message`, the daemon already claimed that WhatsApp row. Do not mark

@@ -52,7 +52,9 @@ coderoam run
 
 `coderoam setup` configures an agent, asks which WhatsApp numbers are allowed,
 requires you to confirm those numbers exactly, links WhatsApp with QR if needed,
-and creates a dedicated session group.
+and creates a dedicated session group. By default the group name follows the
+selected agent, such as "Codex Session" or "Claude Session", so parallel lanes
+are visually distinct on your phone.
 
 For docs, scripts, or a non-interactive preview:
 
@@ -72,7 +74,7 @@ wires.
 | Install and create the first mobile coding chat | `coderoam setup` |
 | Continue Codex from WhatsApp | `coderoam setup --agent codex --workdir /path/to/workspace --session-id codex-session` |
 | Continue Claude from WhatsApp | `coderoam setup --agent claude --workdir /path/to/workspace --session-id claude-session` |
-| Add a second isolated session | `coderoam active start --name "Claude Session" --participants "+15550001111" --alias claude-session --session-id claude-session --runner claude-code --yes` |
+| Add a second isolated session | `coderoam active start --name "Claude Session" --participants "+15550001111" --alias claude-session --session-id claude-session --yes` |
 | Check whether messages are queued | `coderoam active status` |
 | Pull WhatsApp messages into the current terminal session | `coderoam inbox drain --format prompt --session-id <session-id>` |
 | Send an important update back to the group | `coderoam notify --chat <session-id> --important --text "Update..."` |
@@ -279,7 +281,6 @@ coderoam active start \
   --participants "+15550001111" \
   --alias codex-session \
   --session-id codex-session \
-  --runner codex-code \
   --yes
 coderoam inbox watch --format prompt --session-id codex-session
 ```
@@ -294,7 +295,6 @@ coderoam active start \
   --participants "<your-phone-number>" \
   --alias <session-id> \
   --session-id <session-id> \
-  --runner <runner-id> \
   --yes
 coderoam inbox watch --format prompt --session-id <session-id>
 ```

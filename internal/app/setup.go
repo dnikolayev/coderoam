@@ -77,7 +77,7 @@ dedicated session group for continuing coding sessions from mobile.`,
 	cmd.Flags().BoolVar(&noRunbook, "no-runbook", false, "skip writing agent runbook files (CLAUDE.md/AGENTS.md/GEMINI.md) into the workspace")
 	cmd.Flags().StringVar(&sessionID, "session-id", "codex-session", "active session id")
 	cmd.Flags().StringVar(&profile, "profile", "", "profile name")
-	cmd.Flags().StringVar(&groupName, "group-name", "Coderoam Session", "new WhatsApp group name")
+	cmd.Flags().StringVar(&groupName, "group-name", "", "new WhatsApp group name; defaults to \"<Agent> Session\"")
 	cmd.Flags().StringVar(&authorized, "authorized", "", "comma-separated phone numbers or WhatsApp JIDs allowed to control the session")
 	cmd.Flags().BoolVar(&printOnly, "print", false, "print the manual setup guide instead of running the wizard")
 	cmd.Flags().BoolVar(&yes, "yes", false, "accept prompts when all required values are provided by flags")
@@ -125,7 +125,7 @@ func (s *cliState) runSetupWizard(cmd *cobra.Command, opts setupWizardOptions) e
 	}
 	interactive := interactiveReader(cmd.InOrStdin())
 	if !interactive && !opts.Yes {
-		return fmt.Errorf("interactive setup requires a terminal; rerun with --print for commands or pass --yes with --authorized, --agent, --workdir, and --group-name")
+		return fmt.Errorf("interactive setup requires a terminal; rerun with --print for commands or pass --yes with --authorized, --agent, and --workdir")
 	}
 	reader := bufio.NewReader(cmd.InOrStdin())
 	out := cmd.OutOrStdout()
@@ -163,20 +163,19 @@ func (s *cliState) runSetupWizard(cmd *cobra.Command, opts setupWizardOptions) e
 	if sessionID == "" {
 		sessionID = "coderoam-session"
 	}
-	groupName := strings.TrimSpace(opts.GroupName)
-	if groupName == "" {
-		groupName = "Coderoam Session"
-	}
-	if len(groupName) > 25 {
-		return fmt.Errorf("--group-name must be 25 characters or fewer")
-	}
-
 	selected, err := setupSelectAgent(reader, out, opts.Agent, interactive, opts.Yes)
 	if err != nil {
 		return err
 	}
 	if selected.Key == "" {
 		return fmt.Errorf("no agent selected")
+	}
+	groupName := strings.TrimSpace(opts.GroupName)
+	if groupName == "" {
+		groupName = selected.Display + " Session"
+	}
+	if len(groupName) > 25 {
+		return fmt.Errorf("--group-name must be 25 characters or fewer")
 	}
 	runnerCfg, err := buildRunnerPreset(selected.Preset, workdir, 120, "", "", sessionID, "", nil, "")
 	if err != nil {
@@ -247,7 +246,6 @@ func (s *cliState) runSetupWizard(cmd *cobra.Command, opts setupWizardOptions) e
 	config.UpsertActiveSessionGroup(&cfg, config.GroupConfig{
 		ID:              chat.ID,
 		Alias:           alias,
-		Runner:          selected.RunnerID,
 		Mode:            config.GroupModeActiveSession,
 		ActiveSessionID: sessionID,
 		Enabled:         true,
@@ -301,7 +299,7 @@ Quick WhatsApp setup:
   coderoam auth login --profile bot --qr
   coderoam runners preset codex-code --id codex-code --workdir /path/to/workspace --yes
   coderoam runbook --workdir /path/to/workspace
-  coderoam active start --name "Codex Session" --participants "+15550001111" --alias codex-session --session-id codex-session --runner codex-code --yes
+  coderoam active start --name "Codex Session" --participants "+15550001111" --alias codex-session --session-id codex-session --yes
   coderoam run
 
 For parallel clients, create one active group per client and never reuse session
@@ -386,7 +384,7 @@ func setupAgentGuide(agent, workdir, sessionID string) string {
 		if detection.Found || agent != "auto" {
 			detectionSessionID := setupGuideSessionID(agent, sessionID, detection.Key)
 			fmt.Fprintf(&b, "    configure: coderoam runners preset %s --id %s --workdir %s --yes\n", detection.Preset, detection.RunnerID, shellQuote(workdir))
-			fmt.Fprintf(&b, "    active group: coderoam active start --name %q --participants \"+15550001111\" --alias %s --session-id %s --runner %s --yes\n", detection.Display+" Session", shellQuote(detectionSessionID), shellQuote(detectionSessionID), shellQuote(detection.RunnerID))
+			fmt.Fprintf(&b, "    active group: coderoam active start --name %q --participants \"+15550001111\" --alias %s --session-id %s --yes\n", detection.Display+" Session", shellQuote(detectionSessionID), shellQuote(detectionSessionID))
 			fmt.Fprintf(&b, "    instructions: %s\n", detection.Instructions)
 		}
 	}

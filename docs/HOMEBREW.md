@@ -61,7 +61,7 @@ Manual equivalent:
 coderoam init
 coderoam auth login --profile bot --qr
 coderoam runners preset codex-code --id codex-code --workdir /path/to/workspace --yes
-coderoam active start --name "Codex Session" --participants "+15550001111" --alias codex-session --session-id codex-session --runner codex-code --yes
+coderoam active start --name "Codex Session" --participants "+15550001111" --alias codex-session --session-id codex-session --yes
 coderoam run
 ```
 

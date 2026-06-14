@@ -24,7 +24,8 @@ The setup wizard:
 - detects supported local agent clients
 - asks which WhatsApp phone numbers may control the session
 - requires exact confirmation of those numbers before sending invites
-- creates a dedicated WhatsApp group and configures sender allowlisting
+- creates a dedicated WhatsApp group named after the selected agent by default
+  and configures sender allowlisting
 
 If a config already exists, do not reset it. `coderoam init` is idempotent and
 will report that initialization is already complete; continue with
@@ -48,10 +49,10 @@ ids. A safe layout is:
 
 ```sh
 coderoam runners preset codex-code --id codex-code --workdir /path/to/workspace --yes
-coderoam active start --name "Codex Session" --participants "+15550001111" --alias codex-session --session-id codex-session --runner codex-code --yes
+coderoam active start --name "Codex Session" --participants "+15550001111" --alias codex-session --session-id codex-session --yes
 
 coderoam runners preset claude-code --id claude-code --workdir /path/to/workspace --yes
-coderoam active start --name "Claude Session" --participants "+15550001111" --alias claude-session --session-id claude-session --runner claude-code --yes
+coderoam active start --name "Claude Session" --participants "+15550001111" --alias claude-session --session-id claude-session --yes
 ```
 
 Do not point both groups at the same `active_session_id`; that makes both

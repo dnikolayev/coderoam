@@ -30,6 +30,26 @@ func TestShouldIgnoreAnswerUsesCustomMarker(t *testing.T) {
 	}
 }
 
+func TestClaudeAuthRecoveryText(t *testing.T) {
+	for _, err := range []error{
+		fmt.Errorf("claude failed: Not logged in · Please run /login"),
+		fmt.Errorf("claude failed: Could not resolve authentication method"),
+		fmt.Errorf("claude failed: authentication_failed"),
+	} {
+		got, ok := claudeAuthRecoveryText(err)
+		if !ok {
+			t.Fatalf("expected auth recovery text for %v", err)
+		}
+		if !strings.Contains(got, "/login") {
+			t.Fatalf("recovery text missing login instruction: %q", got)
+		}
+	}
+
+	if got, ok := claudeAuthRecoveryText(fmt.Errorf("claude failed: network timeout")); ok {
+		t.Fatalf("unexpected auth recovery text: %q", got)
+	}
+}
+
 func TestBuildPromptAddsImportantOnlyPolicy(t *testing.T) {
 	t.Setenv("CLAUDE_RUNNER_SYSTEM_PROMPT", "base prompt")
 	t.Setenv("CLAUDE_RUNNER_IMPORTANT_ONLY", "true")

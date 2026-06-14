@@ -213,12 +213,15 @@ func TestSetupCommandDetectsAgentClientsAndPrintsSelectionCommands(t *testing.T)
 		"coderoam runners preset codex-code --id codex-code --workdir /workspace/project --yes",
 		"coderoam runners preset gemini-code --id gemini-code --workdir /workspace/project --yes",
 		"coderoam active start --name \"Codex Session\"",
-		"--alias claims-qa-codex --session-id claims-qa-codex --runner codex-code --yes",
+		"--alias claims-qa-codex --session-id claims-qa-codex --yes",
 		"docs/agents/codex.md",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("setup output missing %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "active group:") && strings.Contains(out, " --runner ") {
+		t.Fatalf("active-session setup guide should not configure a fallback runner by default:\n%s", out)
 	}
 }
 
@@ -239,7 +242,7 @@ func TestSetupCommandCanShowSelectedMissingAgent(t *testing.T) {
 	for _, want := range []string{
 		"Claude: not found",
 		"coderoam runners preset claude-code --id claude-code --workdir /workspace/project --yes",
-		"--alias review --session-id review --runner claude-code --yes",
+		"--alias review --session-id review --yes",
 		"docs/agents/claude.md",
 	} {
 		if !strings.Contains(out, want) {
@@ -382,11 +385,59 @@ func TestSetupWizardConfiguresActiveSessionWithConfirmedAuthorizedNumber(t *test
 	if !ok {
 		t.Fatalf("active group not configured: %+v", updated.Groups)
 	}
-	if group.Mode != config.GroupModeActiveSession || config.ActiveSessionID(group) != "codex-session" || group.Runner != "codex-code" {
+	if group.Mode != config.GroupModeActiveSession || config.ActiveSessionID(group) != "codex-session" || group.Runner != "" {
 		t.Fatalf("active group = %+v", group)
 	}
 	if len(ft.Sent) != 1 || ft.Sent[0].ChatID != "+15550001111" {
 		t.Fatalf("invite sends = %+v", ft.Sent)
+	}
+}
+
+func TestSetupWizardDefaultsGroupNameFromSelectedAgent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := config.Default()
+	cfg.App.Profile = "bot"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "coderoam.sqlite3")
+	cfg.Transport.Type = "fake"
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	ft := fake.New(nil)
+	state := &cliState{
+		configPath: path,
+		transportFactory: func(context.Context, config.Config) (transport.ChatTransport, error) {
+			return ft, nil
+		},
+	}
+	cmd := state.setupCommand()
+	cmd.SetArgs([]string{
+		"--yes",
+		"--agent", "claude",
+		"--authorized", "+1 (555) 000-1111",
+		"--workdir", t.TempDir(),
+		"--session-id", "claude-session",
+	})
+	out, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "group: Claude Session") {
+		t.Fatalf("setup output missing default group name:\n%s", out)
+	}
+	updated, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, ok := resolveGroup(updated, "claude-session")
+	if !ok {
+		t.Fatalf("default active group not configured: %+v", updated.Groups)
+	}
+	if group.Alias != "claude-session" || config.ActiveSessionID(group) != "claude-session" || group.Runner != "" {
+		t.Fatalf("default active group = %+v", group)
+	}
+	if len(ft.Sent) != 1 || !strings.Contains(ft.Sent[0].Text, "Claude Session") {
+		t.Fatalf("invite text = %+v", ft.Sent)
 	}
 }
 
@@ -1359,6 +1410,49 @@ func TestGroupsSetRunnerPreservesActiveSessionMode(t *testing.T) {
 	}
 	if group.ActiveSessionID != "codex-session" {
 		t.Fatalf("active session id = %q, want codex-session", group.ActiveSessionID)
+	}
+}
+
+func TestGroupsSetRunnerCanClearActiveSessionFallback(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Runner["codex-code"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+	}
+	cfg.Groups = []config.GroupConfig{{
+		ID:              "chat@g.us",
+		Alias:           "codex-session",
+		Runner:          "codex-code",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "codex-session",
+		Enabled:         true,
+	}}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	state := &cliState{configPath: path}
+	cmd := state.groupsCommand()
+	cmd.SetArgs([]string{"set-runner", "chat@g.us", "none"})
+	out, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "runner=-") {
+		t.Fatalf("set-runner output = %q, want cleared runner", out)
+	}
+	updated, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, ok := config.FindGroup(updated, "chat@g.us")
+	if !ok {
+		t.Fatal("group not found")
+	}
+	if group.Runner != "" || group.Mode != config.GroupModeActiveSession || config.ActiveSessionID(group) != "codex-session" {
+		t.Fatalf("active group after runner clear = %+v", group)
 	}
 }
 

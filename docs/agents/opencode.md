@@ -19,6 +19,12 @@ Pick this client's session id from the delivered WhatsApp prompt, or from the
 row in `active status` that belongs to this OpenCode group. Do not reuse
 another client's session id.
 
+Each OpenCode session must use its own clearly named WhatsApp group, alias, and
+session id, such as `opencode-session` for a group named "OpenCode Session". If
+a new lane is needed, create a new group with `coderoam active start --name
+"OpenCode Session" --alias <session-id> --session-id <session-id> --yes`
+instead of sharing an existing agent group.
+
 Drain pending input at the start of the turn and before final handoff:
 
 `coderoam inbox drain --format prompt --session-id <session-id>`
@@ -43,7 +49,7 @@ details; ask for a resend or media download.
 
 Send only important WhatsApp updates:
 
-`coderoam notify --chat <chat-or-session-alias> --important --text "<message>"`
+`coderoam notify --chat <session-id> --important --text "<message>"`
 
 Important means plan/checklist changes, blockers, owner questions, and final
 summaries. Do not send routine command output or minor progress.

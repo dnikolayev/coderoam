@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/dnikolayev/coderoam/internal/config"
 	"github.com/dnikolayev/coderoam/internal/db"
+	"github.com/dnikolayev/coderoam/internal/router"
+	"github.com/dnikolayev/coderoam/internal/transport"
 	"github.com/dnikolayev/coderoam/internal/types"
 )
 
@@ -203,5 +206,186 @@ func TestRunConfigHolderZeroValueLoad(t *testing.T) {
 	got := holder.Load()
 	if got.App.Profile != "" || len(got.Groups) != 0 || len(got.Runner) != 0 || len(got.Security.AdminSenderIDs) != 0 || len(got.Security.AllowedSenderIDs) != 0 {
 		t.Fatalf("zero-value holder load = %+v", got)
+	}
+}
+
+type runHandlerFunc func(context.Context, types.IncomingMessage) router.ProcessResult
+
+func (f runHandlerFunc) Handle(ctx context.Context, msg types.IncomingMessage) router.ProcessResult {
+	return f(ctx, msg)
+}
+
+func TestRunMessageDispatcherDoesNotBlockOtherSessions(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.Concurrency.GlobalMaxInflight = 2
+	cfg.Concurrency.QueueMaxDepthPerGroup = 2
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sessionAStarted := make(chan struct{})
+	releaseSessionA := make(chan struct{})
+	sessionBHandled := make(chan struct{})
+	handler := runHandlerFunc(func(ctx context.Context, msg types.IncomingMessage) router.ProcessResult {
+		switch msg.ChatID {
+		case "session-a@g.us":
+			close(sessionAStarted)
+			select {
+			case <-releaseSessionA:
+			case <-ctx.Done():
+			}
+		case "session-b@g.us":
+			close(sessionBHandled)
+		}
+		return router.ProcessResult{Reason: "processed"}
+	})
+	dispatcher := newRunMessageDispatcher(ctx, handler, cfg, nil)
+	defer dispatcher.Stop()
+
+	if !dispatcher.Dispatch(types.IncomingMessage{ID: "a-1", ChatID: "session-a@g.us"}) {
+		t.Fatal("session-a dispatch was rejected")
+	}
+	select {
+	case <-sessionAStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("session-a handler did not start")
+	}
+
+	if !dispatcher.Dispatch(types.IncomingMessage{ID: "b-1", ChatID: "session-b@g.us"}) {
+		t.Fatal("session-b dispatch was rejected")
+	}
+	select {
+	case <-sessionBHandled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("session-b was blocked behind session-a")
+	}
+	close(releaseSessionA)
+}
+
+func TestRunMessageDispatcherPreservesOrderWithinSession(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.Concurrency.GlobalMaxInflight = 4
+	cfg.Concurrency.QueueMaxDepthPerGroup = 2
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondStarted := make(chan struct{})
+	handler := runHandlerFunc(func(ctx context.Context, msg types.IncomingMessage) router.ProcessResult {
+		switch msg.ID {
+		case "first":
+			close(firstStarted)
+			select {
+			case <-releaseFirst:
+			case <-ctx.Done():
+			}
+		case "second":
+			close(secondStarted)
+		}
+		return router.ProcessResult{Reason: "processed"}
+	})
+	dispatcher := newRunMessageDispatcher(ctx, handler, cfg, nil)
+	defer dispatcher.Stop()
+
+	if !dispatcher.Dispatch(types.IncomingMessage{ID: "first", ChatID: "session-a@g.us"}) {
+		t.Fatal("first dispatch was rejected")
+	}
+	select {
+	case <-firstStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first message did not start")
+	}
+	if !dispatcher.Dispatch(types.IncomingMessage{ID: "second", ChatID: "session-a@g.us"}) {
+		t.Fatal("second dispatch was rejected")
+	}
+	select {
+	case <-secondStarted:
+		t.Fatal("second message started before first message finished")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseFirst)
+	select {
+	case <-secondStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second message did not start after first finished")
+	}
+}
+
+type blockingSendTransport struct {
+	transport.ChatTransport
+
+	sessionAStarted chan struct{}
+	releaseSessionA chan struct{}
+	sessionBSent    chan struct{}
+}
+
+func (t *blockingSendTransport) SendText(ctx context.Context, chatID string, text string, opts types.SendOptions) (*types.SentMessage, error) {
+	switch chatID {
+	case "session-a@g.us":
+		close(t.sessionAStarted)
+		select {
+		case <-t.releaseSessionA:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	case "session-b@g.us":
+		close(t.sessionBSent)
+	}
+	return &types.SentMessage{ID: "sent-" + chatID, ChatID: chatID, SentAt: time.Now()}, nil
+}
+
+func TestSendPendingActiveOutboxDoesNotBlockOtherSessions(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Concurrency.GlobalMaxInflight = 2
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.QueueActiveOutbox(t.Context(), cfg.App.Profile, "session-a@g.us", "blocked", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.QueueActiveOutbox(t.Context(), cfg.App.Profile, "session-b@g.us", "should send", true); err != nil {
+		t.Fatal(err)
+	}
+	transport := &blockingSendTransport{
+		sessionAStarted: make(chan struct{}),
+		releaseSessionA: make(chan struct{}),
+		sessionBSent:    make(chan struct{}),
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		sent, err := sendPendingActiveOutbox(context.Background(), store, transport, cfg, 10)
+		if err == nil && sent != 2 {
+			err = fmt.Errorf("sent = %d, want 2", sent)
+		}
+		done <- err
+	}()
+
+	select {
+	case <-transport.sessionAStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("session-a send did not start")
+	}
+	select {
+	case <-transport.sessionBSent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("session-b send was blocked behind session-a")
+	}
+	close(transport.releaseSessionA)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("outbox send did not finish")
 	}
 }

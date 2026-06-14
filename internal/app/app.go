@@ -315,6 +315,15 @@ func nonEmpty(values ...string) string {
 	return ""
 }
 
+func isNoRunnerArg(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "-", "none", "off":
+		return true
+	default:
+		return false
+	}
+}
+
 func versionText() string {
 	lines := []string{"coderoam " + nonEmpty(version, "dev")}
 	if strings.TrimSpace(commit) != "" && commit != "none" {

@@ -109,9 +109,12 @@ func TestRelayRunbookExplainsSessionIsolation(t *testing.T) {
 	t.Parallel()
 	for _, want := range []string{
 		"Pick THIS client's session id",
-		"Do not reuse another client's session id",
-		"one session id per group",
+		"another client's group, alias, or session id",
+		"return address",
+		"Every client needs its own clearly named WhatsApp group",
+		"coderoam active start --name \"<Agent> Session\" --alias <session-id> --session-id <session-id> --yes",
 		"coderoam inbox next --session-id <session-id>",
+		"coderoam notify --chat <session-id> --important --text",
 	} {
 		if !strings.Contains(relayRunbook, want) {
 			t.Fatalf("relay runbook missing %q", want)

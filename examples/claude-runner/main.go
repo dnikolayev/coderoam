@@ -68,6 +68,15 @@ func main() {
 	answer, duration, err := runClaude(req)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		if text, ok := claudeAuthRecoveryText(err); ok {
+			writeResponse(response{
+				Version:   "1.0",
+				RequestID: req.RequestID,
+				Actions:   []action{{Type: "reply", Text: text}},
+				Metadata:  map[string]any{"runtime_ms": duration.Milliseconds()},
+			})
+			return
+		}
 		writeResponse(response{
 			Version:   "1.0",
 			RequestID: req.RequestID,
@@ -348,6 +357,19 @@ func envBool(key string, fallback bool) bool {
 
 func shouldIgnoreAnswer(answer string) bool {
 	return strings.TrimSpace(answer) == ignoreMarker()
+}
+
+func claudeAuthRecoveryText(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "not logged in") &&
+		!strings.Contains(msg, "could not resolve authentication method") &&
+		!strings.Contains(msg, "authentication_failed") {
+		return "", false
+	}
+	return "Claude Code is not logged in on this machine. Open a local terminal, run `claude`, then run `/login` inside Claude Code. After login finishes, send another message here.", true
 }
 
 func ignoreMarker() string {

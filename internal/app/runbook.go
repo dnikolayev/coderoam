@@ -49,9 +49,18 @@ NOT own the connection.
 ## 3. Pick THIS client's session id
 
 Use the session id from the WhatsApp prompt when it is shown. Otherwise choose
-the row in "coderoam active status" that belongs to this client/group. Keep
-one session id per group: for example, Codex can use "codex-session" and
-Claude can use "claude-session". Do not reuse another client's session id.
+the row in "coderoam active status" that belongs to this client/group. The
+row's alias/session is this client's return address. Use it for inbox commands
+and for "coderoam notify --chat"; do not reply through another client's alias
+or a shared raw group id.
+
+Every client needs its own clearly named WhatsApp group, alias, and session id:
+for example, Codex can use group "Codex Session" with "codex-session" and
+Claude can use group "Claude Session" with "claude-session". Do not reuse
+another client's group, alias, or session id. If a new lane is needed, create a
+new group instead of sharing an existing one:
+
+    coderoam active start --name "<Agent> Session" --alias <session-id> --session-id <session-id> --yes
 
 ## 4. Listen cheaply - event-driven, NEVER poll
 
@@ -68,8 +77,8 @@ but there is still only ONE "coderoam run".
 1. Read the message from the listener output.
 2. Batch any others:  coderoam inbox drain --session-id <session-id> --format prompt
 3. Do the requested work in this repo.
-4. Reply:  coderoam notify --chat <group-id> --text "..."  (markdown is
-   auto-converted to WhatsApp formatting)
+4. Reply:  coderoam notify --chat <session-id> --important --text "..."
+   (markdown is auto-converted to WhatsApp formatting)
 5. Mark handled:  coderoam inbox done <n>  (per row)
 6. Relaunch "inbox next" for that session.
 
@@ -80,9 +89,10 @@ but there is still only ONE "coderoam run".
   daemons are not. Check before "run".
 - Event-driven only. Block on "inbox next"; never poll on a timer.
 - The sender allowlist is enforced - only authorized senders' messages surface.
-- To add a parallel lane, run "coderoam active start --name <name> --session-id
-  <id> --yes" - it invites the already-authorized owner automatically; never ask
-  the user for a phone number coderoam already has.`
+- To add a parallel lane, run "coderoam active start --name <distinct name>
+  --alias <id> --session-id <id> --yes" - it invites the already-authorized
+  owner automatically; never ask the user for a phone number coderoam already
+  has.`
 
 // agentRunbookFiles maps an agent name to the instruction filename(s) that
 // agent reads on startup.
