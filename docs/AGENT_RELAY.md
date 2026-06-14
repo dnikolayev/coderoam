@@ -42,7 +42,7 @@ coderoam active status
 coderoam inbox drain --format prompt --session-id <session-id>
 coderoam inbox watch --format prompt --session-id <session-id>
 coderoam inbox done <id>
-coderoam notify --chat <chat-or-session-alias> --important --text "<message>"
+coderoam notify --chat <session-id> --important --text "<message>"
 ```
 
 For a long-lived local session, install the watcher as a user service:

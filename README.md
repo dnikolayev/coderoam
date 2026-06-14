@@ -263,7 +263,7 @@ coderoam active enable "<group-id>" \
   --session-id <session-id>
 coderoam inbox drain --format prompt --session-id <session-id>
 coderoam inbox done 1
-coderoam notify --chat <group-alias-or-id> --important --text "Plan updated..."
+coderoam notify --chat <session-id> --important --text "Plan updated..."
 ```
 
 Use `inbox watch` only with clients that continuously read watcher stdout while

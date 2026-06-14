@@ -1414,7 +1414,6 @@ func TestGroupsSetRunnerPreservesActiveSessionMode(t *testing.T) {
 }
 
 func TestGroupsSetRunnerCanClearActiveSessionFallback(t *testing.T) {
-	t.Parallel()
 	cfg := config.Default()
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
 	cfg.Runner["codex-code"] = config.RunnerConfig{

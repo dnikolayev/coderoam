@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -312,6 +313,83 @@ func TestRunMessageDispatcherPreservesOrderWithinSession(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("second message did not start after first finished")
 	}
+}
+
+func TestRunMessageDispatcherDropsOldestQueuedMessageOnOverflow(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.Concurrency.GlobalMaxInflight = 1
+	cfg.Concurrency.QueueMaxDepthPerGroup = 1
+	cfg.Concurrency.QueueOverflowPolicy = "drop_oldest_with_notice"
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	handled := make(chan string, 3)
+	handler := runHandlerFunc(func(ctx context.Context, msg types.IncomingMessage) router.ProcessResult {
+		if msg.ID == "first" {
+			close(firstStarted)
+			select {
+			case <-releaseFirst:
+			case <-ctx.Done():
+			}
+		}
+		handled <- msg.ID
+		return router.ProcessResult{Reason: "processed"}
+	})
+	var logsMu sync.Mutex
+	var logs []string
+	dispatcher := newRunMessageDispatcher(ctx, handler, cfg, func(format string, args ...any) {
+		logsMu.Lock()
+		defer logsMu.Unlock()
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	defer dispatcher.Stop()
+
+	if !dispatcher.Dispatch(types.IncomingMessage{ID: "first", ChatID: "session-a@g.us"}) {
+		t.Fatal("first dispatch was rejected")
+	}
+	select {
+	case <-firstStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first message did not start")
+	}
+	if !dispatcher.Dispatch(types.IncomingMessage{ID: "second", ChatID: "session-a@g.us"}) {
+		t.Fatal("second dispatch was rejected")
+	}
+	if !dispatcher.Dispatch(types.IncomingMessage{ID: "third", ChatID: "session-a@g.us"}) {
+		t.Fatal("third dispatch was rejected after dropping oldest queued message")
+	}
+	close(releaseFirst)
+
+	gotFirst := waitForHandledID(t, handled)
+	gotSecond := waitForHandledID(t, handled)
+	if gotFirst != "first" || gotSecond != "third" {
+		t.Fatalf("handled ids = %q, %q; want first, third", gotFirst, gotSecond)
+	}
+	select {
+	case id := <-handled:
+		t.Fatalf("unexpected handled id after queue overflow: %s", id)
+	case <-time.After(100 * time.Millisecond):
+	}
+	logsMu.Lock()
+	joinedLogs := strings.Join(logs, "\n")
+	logsMu.Unlock()
+	if !strings.Contains(joinedLogs, "message queue overflow dropped oldest") {
+		t.Fatalf("dispatcher logs = %q, want overflow drop notice", joinedLogs)
+	}
+}
+
+func waitForHandledID(t *testing.T, handled <-chan string) string {
+	t.Helper()
+	select {
+	case id := <-handled:
+		return id
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handled message")
+	}
+	return ""
 }
 
 type blockingSendTransport struct {

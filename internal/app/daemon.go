@@ -270,6 +270,7 @@ type runMessageDispatcher struct {
 	handler     runIncomingHandler
 	logf        func(string, ...any)
 	queueDepth  int
+	queuePolicy string
 	globalSlots chan struct{}
 
 	mu     sync.Mutex
@@ -285,6 +286,7 @@ func newRunMessageDispatcher(ctx context.Context, handler runIncomingHandler, cf
 		handler:     handler,
 		logf:        logf,
 		queueDepth:  runQueueDepth(cfg),
+		queuePolicy: cfg.Concurrency.QueueOverflowPolicy,
 		globalSlots: make(chan struct{}, runMaxInflight(cfg)),
 		groups:      map[string]chan types.IncomingMessage{},
 	}
@@ -314,6 +316,30 @@ func (d *runMessageDispatcher) Dispatch(msg types.IncomingMessage) bool {
 	default:
 	}
 	queue := d.groupQueue(msg.ChatID)
+	select {
+	case <-d.ctx.Done():
+		return false
+	case queue <- msg:
+		return true
+	default:
+		return d.handleFullQueue(queue, msg)
+	}
+}
+
+func (d *runMessageDispatcher) handleFullQueue(queue chan types.IncomingMessage, msg types.IncomingMessage) bool {
+	if d.queuePolicy != "drop_oldest_with_notice" {
+		d.logResult(msg, router.ProcessResult{Ignored: true, Reason: "message queue full"})
+		return false
+	}
+	select {
+	case <-d.ctx.Done():
+		return false
+	case dropped := <-queue:
+		d.logResult(dropped, router.ProcessResult{Ignored: true, Reason: "message queue overflow dropped oldest"})
+	default:
+		d.logResult(msg, router.ProcessResult{Ignored: true, Reason: "message queue full"})
+		return false
+	}
 	select {
 	case <-d.ctx.Done():
 		return false
