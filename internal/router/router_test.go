@@ -419,7 +419,7 @@ func TestRouterIgnoresRecentLongOutboxEcho(t *testing.T) {
 	}
 }
 
-func TestRouterActiveSessionFallsBackToSafeRunnerWithoutWatcher(t *testing.T) {
+func TestRouterActiveSessionQueuesUnpinnedRunnerWithoutWatcher(t *testing.T) {
 	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
@@ -459,31 +459,31 @@ func TestRouterActiveSessionFallsBackToSafeRunnerWithoutWatcher(t *testing.T) {
 	if result.Ignored {
 		t.Fatalf("message was ignored: %s", result.Reason)
 	}
-	if result.Reason != "active inbox fallback runner processed" {
+	if result.Reason != "active inbox queued" {
 		t.Fatalf("reason = %q", result.Reason)
 	}
-	if len(ft.Sent) != 1 || ft.Sent[0].Text != "router: continue" {
+	if len(ft.Sent) != 0 {
 		t.Fatalf("sent = %+v", ft.Sent)
 	}
-	done, err := store.ListActiveInbox(t.Context(), "test", "done", 10)
+	unread, err := store.ListActiveInbox(t.Context(), "test", "unread", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(done) != 1 || done[0].ExternalMessageID != "msg-active-fallback" || done[0].ClaimedBySessionID != "codex-session" {
-		t.Fatalf("done active inbox = %+v", done)
+	if len(unread) != 1 || unread[0].ExternalMessageID != "msg-active-fallback" || unread[0].ClaimedBySessionID != "" {
+		t.Fatalf("unread active inbox = %+v", unread)
 	}
 	receipts, err := store.PendingActiveReadReceipts(t.Context(), "test", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(receipts) != 1 || receipts[0].ExternalMessageID != "msg-active-fallback" {
+	if len(receipts) != 0 {
 		t.Fatalf("read receipts = %+v", receipts)
 	}
 	pendingOutbox, err := store.PendingActiveOutbox(t.Context(), "test", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pendingOutbox) != 0 {
+	if len(pendingOutbox) != 1 || !strings.Contains(pendingOutbox[0].Text, "Queued #") {
 		t.Fatalf("pending active outbox = %+v", pendingOutbox)
 	}
 }
@@ -497,7 +497,10 @@ func TestRouterActiveSessionFallbackCombinesUnreadBurst(t *testing.T) {
 		Mode:    "process-once-json",
 		Command: os.Args[0],
 		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
-		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+		Env: map[string]string{
+			"GO_WANT_ROUTER_HELPER_PROCESS": "1",
+			"CODEX_RUNNER_SESSION_ID":       "codex-session",
+		},
 	}
 	group := config.GroupConfig{
 		ID:      "1203630active@g.us",
@@ -587,7 +590,10 @@ func TestRouterActiveSessionScheduledFallbackDrainsLaterUnreadRows(t *testing.T)
 		Mode:    "process-once-json",
 		Command: os.Args[0],
 		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
-		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+		Env: map[string]string{
+			"GO_WANT_ROUTER_HELPER_PROCESS": "1",
+			"CODEX_RUNNER_SESSION_ID":       "codex-session",
+		},
 	}
 	cfg.Groups = []config.GroupConfig{{
 		ID:      "1203630active@g.us",
@@ -668,7 +674,10 @@ func TestRouterStopDrainsScheduledFallbackWithoutProcessing(t *testing.T) {
 		Mode:    "process-once-json",
 		Command: os.Args[0],
 		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
-		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+		Env: map[string]string{
+			"GO_WANT_ROUTER_HELPER_PROCESS": "1",
+			"CODEX_RUNNER_SESSION_ID":       "codex-session",
+		},
 	}
 	cfg.Groups = []config.GroupConfig{{
 		ID:      "1203630active@g.us",
@@ -721,6 +730,120 @@ func TestRouterStopDrainsScheduledFallbackWithoutProcessing(t *testing.T) {
 	}
 }
 
+func TestRouterScheduleUnreadActiveFallbacksRecoversRestartedDaemonWork(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Runner["claude-session"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
+		Env: map[string]string{
+			"GO_WANT_ROUTER_HELPER_PROCESS": "1",
+			"CLAUDE_RUNNER_SESSION_ID":      "claude-session",
+		},
+	}
+	cfg.Groups = []config.GroupConfig{{
+		ID:              "claude@g.us",
+		Alias:           "claude-mrf",
+		Runner:          "claude-session",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "claude-session",
+		Enabled:         true,
+	}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, _, err := store.StoreActiveInboxMessage(t.Context(), "test", "claude-mrf", "claude-session", types.IncomingMessage{
+		ID:        "msg-restart-unread",
+		ChatID:    "claude@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "380506171414@s.whatsapp.net",
+		Text:      "survived restart",
+		RawText:   "survived restart",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	defer func() {
+		if err := r.Stop(t.Context()); err != nil {
+			t.Errorf("router stop: %v", err)
+		}
+	}()
+	r.activeFallbackDelay = 5 * time.Millisecond
+	scheduled, err := r.ScheduleUnreadActiveFallbacks(t.Context(), r.cfg.Load(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scheduled != 1 {
+		t.Fatalf("scheduled = %d, want 1", scheduled)
+	}
+	waitForRouterCondition(t, 10*time.Second, func() bool {
+		done, err := store.ListActiveInbox(t.Context(), "test", "done", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(done) == 1
+	})
+	if sent := ft.SentSnapshot(); len(sent) != 1 || sent[0].Text != "router: survived restart" {
+		t.Fatalf("sent = %+v", sent)
+	}
+}
+
+func TestRouterScheduleUnreadActiveFallbacksLeavesUnpinnedGroupQueued(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Groups = []config.GroupConfig{{
+		ID:              "codex@g.us",
+		Alias:           "mrf-3",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "codex-session",
+		Enabled:         true,
+	}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, _, err := store.StoreActiveInboxMessage(t.Context(), "test", "mrf-3", "codex-session", types.IncomingMessage{
+		ID:        "msg-live-only",
+		ChatID:    "codex@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "380506171414@s.whatsapp.net",
+		Text:      "live session only",
+		RawText:   "live session only",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	scheduled, err := r.ScheduleUnreadActiveFallbacks(t.Context(), r.cfg.Load(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scheduled != 0 {
+		t.Fatalf("scheduled = %d, want 0", scheduled)
+	}
+	unread, err := store.ListActiveInbox(t.Context(), "test", "unread", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unread) != 1 || unread[0].ExternalMessageID != "msg-live-only" {
+		t.Fatalf("unread = %+v", unread)
+	}
+	if sent := ft.SentSnapshot(); len(sent) != 0 {
+		t.Fatalf("sent = %+v", sent)
+	}
+}
+
 func TestRouterActiveSessionFallbackSkipsStaleClaimedRow(t *testing.T) {
 	t.Parallel()
 	cfg := config.Default()
@@ -731,7 +854,10 @@ func TestRouterActiveSessionFallbackSkipsStaleClaimedRow(t *testing.T) {
 		Mode:    "process-once-json",
 		Command: os.Args[0],
 		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
-		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+		Env: map[string]string{
+			"GO_WANT_ROUTER_HELPER_PROCESS": "1",
+			"CODEX_RUNNER_SESSION_ID":       "codex-session",
+		},
 	}
 	cfg.Groups = []config.GroupConfig{{
 		ID:      "1203630active@g.us",
@@ -807,7 +933,7 @@ func TestRouterActiveSessionFallbackSkipsStaleClaimedRow(t *testing.T) {
 	}
 }
 
-func TestRouterActiveSessionQueuesPinnedSessionRunnerWithoutWatcher(t *testing.T) {
+func TestRouterActiveSessionFallsBackToPinnedSessionRunnerWithoutWatcher(t *testing.T) {
 	t.Parallel()
 	cfg := config.Default()
 	cfg.App.Profile = "test"
@@ -818,7 +944,7 @@ func TestRouterActiveSessionQueuesPinnedSessionRunnerWithoutWatcher(t *testing.T
 		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
 		Env: map[string]string{
 			"GO_WANT_ROUTER_HELPER_PROCESS": "1",
-			"CODEX_RUNNER_SESSION_ID":       "019e9efc-2396-7da1-ad55-7cb73667a83d",
+			"CODEX_RUNNER_SESSION_ID":       "codex-session",
 		},
 	}
 	cfg.Groups = []config.GroupConfig{{
@@ -835,6 +961,7 @@ func TestRouterActiveSessionQueuesPinnedSessionRunnerWithoutWatcher(t *testing.T
 	defer store.Close()
 	ft := fake.New(nil)
 	r := New(cfg, store, ft)
+	r.activeFallbackDelay = 0
 	result := r.Handle(t.Context(), types.IncomingMessage{
 		ID:        "msg-pinned-session",
 		ChatID:    "1203630active@g.us",
@@ -847,24 +974,24 @@ func TestRouterActiveSessionQueuesPinnedSessionRunnerWithoutWatcher(t *testing.T
 	if result.Ignored {
 		t.Fatalf("message was ignored: %s", result.Reason)
 	}
-	if result.Reason != "active inbox queued" {
+	if result.Reason != "active inbox fallback runner processed" {
 		t.Fatalf("reason = %q", result.Reason)
 	}
-	if len(ft.Sent) != 0 {
-		t.Fatalf("pinned session fallback sent unexpectedly: %+v", ft.Sent)
+	if len(ft.Sent) != 1 || ft.Sent[0].Text != "router: must not be swallowed" {
+		t.Fatalf("pinned session fallback sent = %+v", ft.Sent)
 	}
-	unread, err := store.ListActiveInbox(t.Context(), "test", "unread", 10)
+	done, err := store.ListActiveInbox(t.Context(), "test", "done", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(unread) != 1 || unread[0].ExternalMessageID != "msg-pinned-session" || unread[0].ClaimedBySessionID != "" {
-		t.Fatalf("unread active inbox = %+v", unread)
+	if len(done) != 1 || done[0].ExternalMessageID != "msg-pinned-session" || done[0].ClaimedBySessionID != "codex-session" {
+		t.Fatalf("done active inbox = %+v", done)
 	}
 	receipts, err := store.PendingActiveReadReceipts(t.Context(), "test", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(receipts) != 0 {
+	if len(receipts) != 1 || receipts[0].ExternalMessageID != "msg-pinned-session" {
 		t.Fatalf("read receipts = %+v", receipts)
 	}
 }
@@ -948,7 +1075,10 @@ func TestRouterActiveSessionDoesNotFallbackWithFreshWatcher(t *testing.T) {
 		Mode:    "process-once-json",
 		Command: os.Args[0],
 		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
-		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+		Env: map[string]string{
+			"GO_WANT_ROUTER_HELPER_PROCESS": "1",
+			"CODEX_RUNNER_SESSION_ID":       "codex-session",
+		},
 	}
 	cfg.Groups = []config.GroupConfig{{
 		ID:      "1203630active@g.us",
@@ -1002,7 +1132,10 @@ func TestRouterActiveSessionRoutesPendingChoiceReplyThroughSafeFallback(t *testi
 		Mode:    "process-once-json",
 		Command: os.Args[0],
 		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
-		Env:     map[string]string{"GO_WANT_ROUTER_HELPER_PROCESS": "1"},
+		Env: map[string]string{
+			"GO_WANT_ROUTER_HELPER_PROCESS": "1",
+			"CODEX_RUNNER_SESSION_ID":       "codex-session",
+		},
 	}
 	cfg.Groups = []config.GroupConfig{{
 		ID:      "1203630active@g.us",
@@ -1599,6 +1732,58 @@ func waitForRouterCondition(t *testing.T, timeout time.Duration, ok func() bool)
 		return
 	}
 	t.Fatalf("condition not met within %s", timeout)
+}
+
+func TestBuildRequestUsesActiveSessionIDForActiveGroup(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.App.Profile = "bot"
+	group := config.GroupConfig{
+		ID:              "1203630mrf3@g.us",
+		Alias:           "mrf-3",
+		Runner:          "codex-code",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "mrf-3",
+		Enabled:         true,
+	}
+	req := buildRequest(&cfg, types.IncomingMessage{
+		ID:        "msg-1",
+		ChatID:    group.ID,
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "keep context",
+		RawText:   "keep context",
+		Timestamp: time.Now(),
+	}, group, group.Runner, "keep context", "")
+	if req.Context.SessionID != "mrf-3" || req.Session.ID != "mrf-3" {
+		t.Fatalf("request session ids = context %q legacy %q, want mrf-3", req.Context.SessionID, req.Session.ID)
+	}
+}
+
+func TestBuildRequestKeepsSyntheticSessionIDForRunnerGroup(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.App.Profile = "bot"
+	group := config.GroupConfig{
+		ID:      "1203630runner@g.us",
+		Alias:   "runner-room",
+		Runner:  "default",
+		Mode:    config.GroupModeRunner,
+		Enabled: true,
+	}
+	req := buildRequest(&cfg, types.IncomingMessage{
+		ID:        "msg-1",
+		ChatID:    group.ID,
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "runner context",
+		RawText:   "@bridge runner context",
+		Timestamp: time.Now(),
+	}, group, group.Runner, "runner context", "@bridge")
+	want := "bot:1203630runner@g.us:default"
+	if req.Context.SessionID != want || req.Session.ID != want {
+		t.Fatalf("request session ids = context %q legacy %q, want %q", req.Context.SessionID, req.Session.ID, want)
+	}
 }
 
 func TestRouterHelperProcess(t *testing.T) {

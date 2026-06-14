@@ -6,6 +6,27 @@ protocols.
 
 ## Unreleased
 
+## v0.1.16 - 2026-06-14
+
+### Added
+
+- Added a daemon transport watchdog that reconnects the WhatsApp Web transport
+  after stream replacement or websocket EOF events.
+- Added startup recovery for unread active-session fallback work so daemon
+  restarts do not strand already-queued WhatsApp messages.
+- Added a `claude-session` runner preset and Claude resume support for pinned
+  session fallbacks.
+
+### Fixed
+
+- Active-session fallback now requires a runner pinned to the exact group
+  session id, preventing one WhatsApp room from accidentally resuming the wrong
+  Codex or Claude conversation.
+- Active-session runner validation now rejects unknown, unpinned, or mismatched
+  fallback runners before saving config.
+- Active-session runner requests now use the group's active session id instead
+  of a synthetic chat/runner id, preserving context across WhatsApp turns.
+
 ## v0.1.15 - 2026-06-11
 
 ### Changed

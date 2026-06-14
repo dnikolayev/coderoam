@@ -511,8 +511,32 @@ func ValidateActiveSessionBindings(cfg Config) error {
 			return fmt.Errorf("active session id %s is configured for multiple chats (%s and %s)", sessionID, previousChat, chatID)
 		}
 		sessionChats[sessionID] = chatID
+		runnerID := strings.TrimSpace(group.Runner)
+		if runnerID == "" {
+			continue
+		}
+		runner, ok := cfg.Runner[runnerID]
+		if !ok {
+			return fmt.Errorf("active session group %s uses unknown runner %s", chatID, runnerID)
+		}
+		pinnedSessionID := runnerPinnedSessionID(runner.Env)
+		if pinnedSessionID == "" {
+			return fmt.Errorf("active session group %s runner %s must pin CODEX_RUNNER_SESSION_ID or CLAUDE_RUNNER_SESSION_ID to %s", chatID, runnerID, sessionID)
+		}
+		if pinnedSessionID != sessionID {
+			return fmt.Errorf("active session group %s runner %s pins session %s but group uses %s", chatID, runnerID, pinnedSessionID, sessionID)
+		}
 	}
 	return nil
+}
+
+func runnerPinnedSessionID(env map[string]string) string {
+	for _, key := range []string{"CODEX_RUNNER_SESSION_ID", "CLAUDE_RUNNER_SESSION_ID"} {
+		if sessionID := strings.TrimSpace(env[key]); sessionID != "" {
+			return sessionID
+		}
+	}
+	return ""
 }
 
 func DenyGroup(cfg *Config, chatID string) bool {

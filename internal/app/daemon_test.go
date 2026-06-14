@@ -467,3 +467,79 @@ func TestSendPendingActiveOutboxDoesNotBlockOtherSessions(t *testing.T) {
 		t.Fatal("outbox send did not finish")
 	}
 }
+
+type reconnectTrackingTransport struct {
+	transport.ChatTransport
+
+	mu           sync.Mutex
+	connected    bool
+	connectCalls int
+	statusErr    error
+	connectErr   error
+}
+
+func (t *reconnectTrackingTransport) Status(ctx context.Context) (*types.ConnectionStatus, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.statusErr != nil {
+		return nil, t.statusErr
+	}
+	return &types.ConnectionStatus{Connected: t.connected, Account: "fake"}, nil
+}
+
+func (t *reconnectTrackingTransport) Connect(ctx context.Context) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.connectCalls++
+	if t.connectErr != nil {
+		return t.connectErr
+	}
+	t.connected = true
+	return nil
+}
+
+func (t *reconnectTrackingTransport) calls() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.connectCalls
+}
+
+func TestEnsureRunTransportConnectedReconnectsDisconnectedTransport(t *testing.T) {
+	t.Parallel()
+	transport := &reconnectTrackingTransport{}
+
+	reconnected, err := ensureRunTransportConnected(t.Context(), transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reconnected {
+		t.Fatal("expected disconnected transport to reconnect")
+	}
+	if transport.calls() != 1 {
+		t.Fatalf("connect calls = %d, want 1", transport.calls())
+	}
+
+	reconnected, err = ensureRunTransportConnected(t.Context(), transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reconnected {
+		t.Fatal("already-connected transport should not reconnect")
+	}
+	if transport.calls() != 1 {
+		t.Fatalf("connect calls = %d, want still 1", transport.calls())
+	}
+}
+
+func TestEnsureRunTransportConnectedReconnectsWhenStatusFails(t *testing.T) {
+	t.Parallel()
+	transport := &reconnectTrackingTransport{statusErr: fmt.Errorf("status unavailable")}
+
+	reconnected, err := ensureRunTransportConnected(t.Context(), transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reconnected || transport.calls() != 1 {
+		t.Fatalf("reconnected=%t calls=%d, want reconnect once", reconnected, transport.calls())
+	}
+}

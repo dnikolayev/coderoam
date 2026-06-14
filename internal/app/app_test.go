@@ -76,6 +76,12 @@ func TestBuildRunnerPresetEnablesImportantOnlyForResumableAssistants(t *testing.
 			importantKey: "CLAUDE_RUNNER_IMPORTANT_ONLY",
 			markerKey:    "CLAUDE_RUNNER_IGNORE_MARKER",
 		},
+		{
+			name:         "claude-session",
+			sessionID:    "019e-session",
+			importantKey: "CLAUDE_RUNNER_IMPORTANT_ONLY",
+			markerKey:    "CLAUDE_RUNNER_IGNORE_MARKER",
+		},
 	}
 
 	for _, tt := range tests {
@@ -92,6 +98,20 @@ func TestBuildRunnerPresetEnablesImportantOnlyForResumableAssistants(t *testing.
 				t.Fatalf("%s = %q, want default marker", tt.markerKey, got)
 			}
 		})
+	}
+}
+
+func TestBuildRunnerPresetClaudeSessionPinsSessionID(t *testing.T) {
+	t.Parallel()
+	runner, err := buildRunnerPreset("claude-session", t.TempDir(), 120, "", "", "019e-claude-session", "", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := runner.Env["CLAUDE_RUNNER_SESSION_ID"]; got != "019e-claude-session" {
+		t.Fatalf("CLAUDE_RUNNER_SESSION_ID = %q, want session id", got)
+	}
+	if got := runner.Env["CLAUDE_RUNNER_PERMISSION_MODE"]; got != "acceptEdits" {
+		t.Fatalf("CLAUDE_RUNNER_PERMISSION_MODE = %q, want acceptEdits", got)
 	}
 }
 
@@ -1374,11 +1394,11 @@ func TestGroupsSetRunnerPreservesActiveSessionMode(t *testing.T) {
 	cfg.Runner["codex-session"] = config.RunnerConfig{
 		Mode:    "process-once-json",
 		Command: os.Args[0],
+		Env:     map[string]string{"CODEX_RUNNER_SESSION_ID": "codex-session"},
 	}
 	cfg.Groups = []config.GroupConfig{{
 		ID:              "chat@g.us",
 		Alias:           "codex-session",
-		Runner:          "codex-active",
 		Mode:            config.GroupModeActiveSession,
 		ActiveSessionID: "codex-session",
 		Enabled:         true,
@@ -1419,6 +1439,7 @@ func TestGroupsSetRunnerCanClearActiveSessionFallback(t *testing.T) {
 	cfg.Runner["codex-code"] = config.RunnerConfig{
 		Mode:    "process-once-json",
 		Command: os.Args[0],
+		Env:     map[string]string{"CODEX_RUNNER_SESSION_ID": "codex-session"},
 	}
 	cfg.Groups = []config.GroupConfig{{
 		ID:              "chat@g.us",
@@ -1463,6 +1484,7 @@ func TestActiveStartCreatesParallelSessionGroup(t *testing.T) {
 	cfg.Runner["codex-active"] = config.RunnerConfig{
 		Mode:    "process-once-json",
 		Command: os.Args[0],
+		Env:     map[string]string{"CODEX_RUNNER_SESSION_ID": "parallel-work"},
 	}
 	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := config.Save(path, cfg); err != nil {
@@ -1609,6 +1631,11 @@ func TestActiveStartReactivatesArchivedManagedSessionGroup(t *testing.T) {
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
 	cfg.Transport.Type = "fake"
+	cfg.Runner["codex-active"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Env:     map[string]string{"CODEX_RUNNER_SESSION_ID": "codex-session"},
+	}
 	cfg.Groups = []config.GroupConfig{{
 		ID:              "old@g.us",
 		Alias:           "claims-qa",
@@ -1659,6 +1686,11 @@ func TestActiveEnableManagedPreservesRunner(t *testing.T) {
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
 	cfg.Transport.Type = "fake"
+	cfg.Runner["codex-active"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Env:     map[string]string{"CODEX_RUNNER_SESSION_ID": "codex-session"},
+	}
 	cfg.Groups = []config.GroupConfig{{
 		ID:              "existing@g.us",
 		Alias:           "codex-session",
@@ -1699,6 +1731,11 @@ func TestActiveEnableRejectsDuplicateActiveSessionID(t *testing.T) {
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
 	cfg.Transport.Type = "fake"
+	cfg.Runner["codex-active"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Env:     map[string]string{"CODEX_RUNNER_SESSION_ID": "codex-session"},
+	}
 	cfg.Groups = []config.GroupConfig{{
 		ID:              "codex-chat@g.us",
 		Alias:           "codex-session",
@@ -1924,6 +1961,11 @@ func TestExplainLastShowsLatestRouteDecision(t *testing.T) {
 	cfg.App.Profile = "test"
 	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
 	cfg.Transport.Type = "fake"
+	cfg.Runner["codex-active"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Env:     map[string]string{"CODEX_RUNNER_SESSION_ID": "codex-session"},
+	}
 	cfg.Groups = []config.GroupConfig{{
 		ID:              "1203630active@g.us",
 		Alias:           "codex-session",

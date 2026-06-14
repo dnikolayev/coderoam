@@ -144,6 +144,55 @@ func TestValidateActiveSessionBindingsIgnoresDisabledAndArchivedGroups(t *testin
 	}
 }
 
+func TestValidateActiveSessionBindingsRejectsUnpinnedActiveRunner(t *testing.T) {
+	t.Parallel()
+	cfg := Default()
+	cfg.Runner["codex-session"] = RunnerConfig{
+		Mode:    "process-once-json",
+		Command: "/usr/bin/true",
+	}
+	cfg.Groups = []GroupConfig{
+		{ID: "chat-a@g.us", Alias: "codex", Runner: "codex-session", Mode: GroupModeActiveSession, ActiveSessionID: "codex-session", Enabled: true},
+	}
+	err := ValidateActiveSessionBindings(cfg)
+	if err == nil || !strings.Contains(err.Error(), "runner codex-session must pin CODEX_RUNNER_SESSION_ID or CLAUDE_RUNNER_SESSION_ID to codex-session") {
+		t.Fatalf("error = %v, want unpinned runner guard", err)
+	}
+}
+
+func TestValidateActiveSessionBindingsRejectsMismatchedActiveRunnerSession(t *testing.T) {
+	t.Parallel()
+	cfg := Default()
+	cfg.Runner["codex-session"] = RunnerConfig{
+		Mode:    "process-once-json",
+		Command: "/usr/bin/true",
+		Env:     map[string]string{"CODEX_RUNNER_SESSION_ID": "other-session"},
+	}
+	cfg.Groups = []GroupConfig{
+		{ID: "chat-a@g.us", Alias: "codex", Runner: "codex-session", Mode: GroupModeActiveSession, ActiveSessionID: "codex-session", Enabled: true},
+	}
+	err := ValidateActiveSessionBindings(cfg)
+	if err == nil || !strings.Contains(err.Error(), "runner codex-session pins session other-session but group uses codex-session") {
+		t.Fatalf("error = %v, want mismatched runner session guard", err)
+	}
+}
+
+func TestValidateActiveSessionBindingsAllowsMatchingPinnedActiveRunner(t *testing.T) {
+	t.Parallel()
+	cfg := Default()
+	cfg.Runner["claude-session"] = RunnerConfig{
+		Mode:    "process-once-json",
+		Command: "/usr/bin/true",
+		Env:     map[string]string{"CLAUDE_RUNNER_SESSION_ID": "claude-session"},
+	}
+	cfg.Groups = []GroupConfig{
+		{ID: "chat-a@g.us", Alias: "claude", Runner: "claude-session", Mode: GroupModeActiveSession, ActiveSessionID: "claude-session", Enabled: true},
+	}
+	if err := ValidateActiveSessionBindings(cfg); err != nil {
+		t.Fatalf("ValidateActiveSessionBindings returned error: %v", err)
+	}
+}
+
 func TestSaveRejectsDuplicateActiveSessionBindings(t *testing.T) {
 	t.Parallel()
 	cfg := Default()

@@ -78,7 +78,7 @@ func (s *cliState) runnersCommand() *cobra.Command {
 	var presetAgentPromptMode string
 	var presetYes bool
 	preset := &cobra.Command{
-		Use:   "preset <codex|codex-code|codex-active|codex-session|claude|claude-code|opencode|opencode-code|gemini|gemini-code|agent|agent-code>",
+		Use:   "preset <codex|codex-code|codex-active|codex-session|claude|claude-code|claude-session|opencode|opencode-code|gemini|gemini-code|agent|agent-code>",
 		Short: "Configure a built-in CLI agent runner preset",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -96,7 +96,7 @@ func (s *cliState) runnersCommand() *cobra.Command {
 			if presetTimeout <= 0 {
 				presetTimeout = 600
 			}
-			if (strings.HasSuffix(presetName, "-code") || presetName == "codex-active" || presetName == "codex-session") && !presetYes {
+			if (strings.HasSuffix(presetName, "-code") || presetName == "codex-active" || presetName == "codex-session" || presetName == "claude-session") && !presetYes {
 				return fmt.Errorf("coding presets can edit files; rerun with --yes to confirm")
 			}
 			runnerCfg, err := buildRunnerPreset(presetName, presetWorkdir, presetTimeout, presetModel, presetSystemPrompt, presetSessionID, presetAgentCommand, presetAgentArgs, presetAgentPromptMode)
@@ -126,7 +126,7 @@ func (s *cliState) runnersCommand() *cobra.Command {
 	preset.Flags().IntVar(&presetTimeout, "timeout-seconds", 600, "runner timeout")
 	preset.Flags().StringVar(&presetModel, "model", "", "model name passed to supported agent CLIs")
 	preset.Flags().StringVar(&presetSystemPrompt, "system-prompt", "", "system prompt passed to the runner wrapper")
-	preset.Flags().StringVar(&presetSessionID, "session-id", "", "Codex session id for codex-session preset")
+	preset.Flags().StringVar(&presetSessionID, "session-id", "", "Codex/Claude session id for session presets")
 	preset.Flags().StringVar(&presetAgentCommand, "agent-command", "", "agent executable for agent/agent-code presets")
 	preset.Flags().StringArrayVar(&presetAgentArgs, "agent-arg", nil, "argument passed to agent-runner before the prompt; repeat for multiple args")
 	preset.Flags().StringVar(&presetAgentPromptMode, "agent-prompt-mode", "", "agent prompt delivery mode: arg or stdin")
@@ -326,6 +326,27 @@ func buildRunnerPreset(name, workdir string, timeoutSeconds int, model, systemPr
 	case "claude-code":
 		env := map[string]string{
 			"CLAUDE_RUNNER_WORKDIR":         workdir,
+			"CLAUDE_RUNNER_PERMISSION_MODE": "acceptEdits",
+			"CLAUDE_RUNNER_IMPORTANT_ONLY":  "true",
+			"CLAUDE_RUNNER_IGNORE_MARKER":   "[[coderoam-ignore]]",
+			"CLAUDE_RUNNER_TIMEOUT_SECONDS": strconv.Itoa(timeoutSeconds),
+			"CLAUDE_RUNNER_SYSTEM_PROMPT":   defaultClaudePrompt(true),
+			"CLAUDE_RUNNER_OUTPUT_FORMAT":   "text",
+		}
+		if model != "" {
+			env["CLAUDE_RUNNER_MODEL"] = model
+		}
+		if systemPrompt != "" {
+			env["CLAUDE_RUNNER_SYSTEM_PROMPT"] = systemPrompt
+		}
+		return presetRunnerConfig("claude-runner", timeoutSeconds, env), nil
+	case "claude-session":
+		if strings.TrimSpace(sessionID) == "" {
+			return config.RunnerConfig{}, fmt.Errorf("--session-id is required for claude-session")
+		}
+		env := map[string]string{
+			"CLAUDE_RUNNER_WORKDIR":         workdir,
+			"CLAUDE_RUNNER_SESSION_ID":      strings.TrimSpace(sessionID),
 			"CLAUDE_RUNNER_PERMISSION_MODE": "acceptEdits",
 			"CLAUDE_RUNNER_IMPORTANT_ONLY":  "true",
 			"CLAUDE_RUNNER_IGNORE_MARKER":   "[[coderoam-ignore]]",

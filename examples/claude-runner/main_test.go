@@ -81,6 +81,24 @@ func TestBuildPromptIncludesSlashAuthorization(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeArgsResumesPinnedSession(t *testing.T) {
+	t.Setenv("CLAUDE_RUNNER_SESSION_ID", "019e-claude-session")
+	args := buildClaudeArgs("acceptEdits", "text")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--resume 019e-claude-session") {
+		t.Fatalf("args missing pinned resume session: %v", args)
+	}
+}
+
+func TestBuildClaudeArgsContinuesLastSessionWhenRequested(t *testing.T) {
+	t.Setenv("CLAUDE_RUNNER_RESUME", "last")
+	args := buildClaudeArgs("acceptEdits", "text")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--continue") {
+		t.Fatalf("args missing continue flag: %v", args)
+	}
+}
+
 func TestBuildPromptBlocksUnauthorizedSlashCommands(t *testing.T) {
 	t.Setenv("CLAUDE_RUNNER_SYSTEM_PROMPT", "base prompt")
 	got := buildPrompt(request{

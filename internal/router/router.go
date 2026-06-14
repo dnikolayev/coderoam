@@ -237,7 +237,7 @@ func (r *Router) process(ctx context.Context, cfg *config.Config, msg types.Inco
 		}
 		if _, connected, err := r.store.ActiveWatcherFresh(ctx, cfg.App.Profile, sessionID, activeWatcherStaleAfter); err != nil {
 			return ProcessResult{}, err
-		} else if !connected && activeSessionFallbackAllowed(cfg, group.Runner) {
+		} else if !connected && activeSessionFallbackAllowed(cfg, group) {
 			if r.activeFallbackDelay <= 0 {
 				return r.processActiveSessionFallback(ctx, cfg, msg, group, sessionID)
 			}
@@ -534,6 +534,57 @@ func (r *Router) processActiveSessionFallback(ctx context.Context, cfg *config.C
 	return result, nil
 }
 
+func (r *Router) ScheduleUnreadActiveFallbacks(ctx context.Context, cfg *config.Config, limit int) (int, error) {
+	if cfg == nil {
+		return 0, fmt.Errorf("router config is not initialized")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := r.store.ListActiveInbox(ctx, cfg.App.Profile, "unread", limit)
+	if err != nil {
+		return 0, err
+	}
+	scheduled := 0
+	seen := map[string]bool{}
+	for _, row := range rows {
+		group, ok := config.FindGroup(*cfg, row.ChatID)
+		if !ok || group.Mode != config.GroupModeActiveSession {
+			continue
+		}
+		sessionID := strings.TrimSpace(row.SessionID)
+		if sessionID == "" {
+			sessionID = config.ActiveSessionID(group)
+		}
+		if sessionID != strings.TrimSpace(config.ActiveSessionID(group)) {
+			continue
+		}
+		key := activeFallbackScheduleKey(cfg.App.Profile, row.ChatID, sessionID)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if !activeSessionFallbackAllowed(cfg, group) {
+			continue
+		}
+		if _, connected, err := r.store.ActiveWatcherFresh(ctx, cfg.App.Profile, sessionID, activeWatcherStaleAfter); err != nil {
+			return scheduled, err
+		} else if connected {
+			continue
+		}
+		msg := incomingFromActiveInbox(row, types.IncomingMessage{
+			ChatID:    row.ChatID,
+			ChatType:  types.ChatTypeGroup,
+			ChatName:  group.Alias,
+			Timestamp: time.Now(),
+		})
+		if r.scheduleActiveSessionFallback(cfg, msg, group, sessionID) {
+			scheduled++
+		}
+	}
+	return scheduled, nil
+}
+
 func activeFallbackScheduleKey(profileID, chatID, sessionID string) string {
 	return strings.Join([]string{profileID, chatID, sessionID}, "\x00")
 }
@@ -580,8 +631,8 @@ func activeAckText(cfg *config.Config, kind string, recordID int64, sessionID, r
 	}
 }
 
-func activeSessionFallbackAllowed(cfg *config.Config, runnerID string) bool {
-	runnerID = strings.TrimSpace(runnerID)
+func activeSessionFallbackAllowed(cfg *config.Config, group config.GroupConfig) bool {
+	runnerID := strings.TrimSpace(group.Runner)
 	if runnerID == "" {
 		return false
 	}
@@ -589,25 +640,28 @@ func activeSessionFallbackAllowed(cfg *config.Config, runnerID string) bool {
 	if !ok {
 		return false
 	}
-	if strings.TrimSpace(runnerCfg.Env["CODEX_RUNNER_SESSION_ID"]) != "" {
-		return false
-	}
 	if strings.TrimSpace(runnerCfg.Env["CODEX_RUNNER_RESUME"]) != "" || activeEnvBool(runnerCfg.Env["CODEX_RUNNER_RESUME_ALL"]) {
-		return false
-	}
-	if strings.TrimSpace(runnerCfg.Env["CLAUDE_RUNNER_SESSION_ID"]) != "" {
 		return false
 	}
 	if strings.TrimSpace(runnerCfg.Env["CLAUDE_RUNNER_RESUME"]) != "" || activeEnvBool(runnerCfg.Env["CLAUDE_RUNNER_RESUME_ALL"]) {
 		return false
 	}
-	if strings.TrimSpace(runnerCfg.Env["AGENT_RUNNER_SESSION_ID"]) != "" {
-		return false
-	}
 	if strings.TrimSpace(runnerCfg.Env["AGENT_RUNNER_RESUME"]) != "" || activeEnvBool(runnerCfg.Env["AGENT_RUNNER_RESUME_ALL"]) {
 		return false
 	}
-	return strings.TrimSpace(runnerCfg.Command) != ""
+	if strings.TrimSpace(runnerCfg.Command) == "" {
+		return false
+	}
+	return activeRunnerPinnedSessionID(runnerCfg.Env) == strings.TrimSpace(config.ActiveSessionID(group))
+}
+
+func activeRunnerPinnedSessionID(env map[string]string) string {
+	for _, key := range []string{"CODEX_RUNNER_SESSION_ID", "CLAUDE_RUNNER_SESSION_ID"} {
+		if sessionID := strings.TrimSpace(env[key]); sessionID != "" {
+			return sessionID
+		}
+	}
+	return ""
 }
 
 func activeEnvBool(value string) bool {
@@ -790,7 +844,7 @@ func applyTrigger(cfg *config.Config, msg types.IncomingMessage) (text string, t
 }
 
 func buildRequest(cfg *config.Config, msg types.IncomingMessage, group config.GroupConfig, runnerID, text, trigger string) runner.Request {
-	sessionID := fmt.Sprintf("%s:%s:%s", cfg.App.Profile, msg.ChatID, runnerID)
+	sessionID := runnerRequestSessionID(cfg, msg, group, runnerID)
 	timestamp := msg.Timestamp.UTC().Format(time.RFC3339Nano)
 	return runner.Request{
 		Version:   runner.ProtocolVersion,
@@ -832,6 +886,15 @@ func buildRequest(cfg *config.Config, msg types.IncomingMessage, group config.Gr
 			History: []runner.HistoryItem{},
 		},
 	}
+}
+
+func runnerRequestSessionID(cfg *config.Config, msg types.IncomingMessage, group config.GroupConfig, runnerID string) string {
+	if group.Mode == config.GroupModeActiveSession {
+		if sessionID := strings.TrimSpace(config.ActiveSessionID(group)); sessionID != "" {
+			return sessionID
+		}
+	}
+	return fmt.Sprintf("%s:%s:%s", cfg.App.Profile, msg.ChatID, runnerID)
 }
 
 func (r *Router) lockForGroup(chatID string) *sync.Mutex {

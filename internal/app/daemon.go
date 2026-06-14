@@ -168,6 +168,13 @@ func (s *cliState) runCommand() *cobra.Command {
 			if err := chatTransport.Connect(ctx); err != nil {
 				return err
 			}
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				runTransportWatchdog(ctx, chatTransport, 10*time.Second, func(format string, args ...any) {
+					fmt.Printf(format, args...)
+				})
+			}()
 			// Group events can arrive (and archive groups) as soon as the
 			// transport is connected, so load one coherent snapshot for the
 			// whole startup pass instead of reading the shared variable.
@@ -186,6 +193,13 @@ func (s *cliState) runCommand() *cobra.Command {
 				if migrated > 0 {
 					fmt.Printf("[active-inbox] migrated=%d chat=%s\n", migrated, logging.Redact(group.ID))
 				}
+			}
+			rescheduled, err := bridgeRouter.ScheduleUnreadActiveFallbacks(ctx, &cfg, 100)
+			if err != nil {
+				return err
+			}
+			if rescheduled > 0 {
+				fmt.Printf("[active-inbox] fallback_rescheduled=%d\n", rescheduled)
 			}
 			pending, err := store.PendingIncomingMessages(ctx, cfg.App.Profile, queueDepth)
 			if err != nil {
@@ -307,6 +321,55 @@ func runMaxInflight(cfg config.Config) int {
 		return cfg.RateLimits.MaxParallelGroups
 	}
 	return 5
+}
+
+func runTransportWatchdog(ctx context.Context, chatTransport transport.ChatTransport, interval time.Duration, logf func(string, ...any)) {
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			reconnected, err := ensureRunTransportConnected(ctx, chatTransport)
+			if err != nil {
+				if logf != nil {
+					logf("[transport] reconnect error=%s\n", err)
+				}
+				continue
+			}
+			if reconnected && logf != nil {
+				status, _ := chatTransport.Status(ctx)
+				account := ""
+				detail := ""
+				if status != nil {
+					account = status.Account
+					detail = status.Detail
+				}
+				logf("[transport] reconnected account=%q %s\n", logging.Redact(account), detail)
+			}
+		}
+	}
+}
+
+func ensureRunTransportConnected(ctx context.Context, chatTransport transport.ChatTransport) (bool, error) {
+	if chatTransport == nil {
+		return false, fmt.Errorf("transport is not configured")
+	}
+	status, statusErr := chatTransport.Status(ctx)
+	if statusErr == nil && status != nil && status.Connected {
+		return false, nil
+	}
+	if err := chatTransport.Connect(ctx); err != nil {
+		if statusErr != nil {
+			return false, fmt.Errorf("status: %v; reconnect: %w", statusErr, err)
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func (d *runMessageDispatcher) Dispatch(msg types.IncomingMessage) bool {

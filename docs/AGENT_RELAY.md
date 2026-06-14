@@ -101,12 +101,17 @@ coderoam inbox watch --format prompt --session-id claims-qa
 ```
 
 Pass `--runner <id>` when this group should keep working through a configured
-fallback runner if no watcher is connected. Omit `--runner` when messages must
-stay queued until the live client explicitly drains or watches them.
+fallback runner if no watcher is connected. For context-preserving autonomous
+fallback, use an explicit pinned session runner such as `codex-session` or
+`claude-session`; avoid generic "resume last/all" runners for dedicated group
+rooms because they can pick the wrong conversation. Omit `--runner` when
+messages must stay queued until the live client explicitly drains or watches
+them.
 
 For multiple clients, use one group and session id per client. For example,
-Codex can use `codex-session` with `codex-code`, while Claude can use
-`claude-session` with `claude-code`. Do not point both groups at the same
+Codex can use an active room with a `codex-session` runner pinned to a Codex
+thread id, while Claude can use an active room with a `claude-session` runner
+pinned to a Claude session id. Do not point both groups at the same
 `active_session_id`, because that makes both clients consume the same local
 inbox lane.
 
@@ -215,24 +220,23 @@ Active-session path:
 WhatsApp group -> coderoam daemon -> active inbox -> live watcher -> active client
 ```
 
-Safe fallback runner:
-
-```text
-WhatsApp group -> coderoam daemon -> active inbox -> short debounce -> non-pinned runner -> reply
-```
-
 Pinned session runner:
 
 ```text
-WhatsApp group -> coderoam daemon -> active inbox -> unread until drain/watch
+WhatsApp group -> coderoam daemon -> active inbox -> short debounce -> explicit session runner -> same Codex/Claude context -> reply
 ```
 
-Use a non-pinned runner for autonomous background replies. Use a pinned session
-runner, or a resume runner such as `codex-active`, only when messages must be
-claimed by the live client window.
+Use a pinned session runner when each WhatsApp room owns a stable Codex/Claude
+conversation. The runner's `CODEX_RUNNER_SESSION_ID` or
+`CLAUDE_RUNNER_SESSION_ID` must match the group's `active_session_id`; otherwise
+the config is rejected and runtime fallback stays queued. Omit `runner` when
+messages must be claimed by the live client window or manually drained. Generic
+resume-last/all fallback is not used for autonomous group-room dispatch.
 
 Fallback processing batches nearby unread messages for the same session into one
-combined user turn. Defaults:
+combined user turn. On daemon startup, unread rows for pinned fallback groups
+are rescheduled so a restart cannot strand already-queued WhatsApp input.
+Defaults:
 
 ```toml
 [active]

@@ -113,11 +113,7 @@ func runClaude(req request) (string, time.Duration, error) {
 	permissionMode := envOrDefault("CLAUDE_RUNNER_PERMISSION_MODE", "default")
 	outputFormat := envOrDefault("CLAUDE_RUNNER_OUTPUT_FORMAT", "text")
 
-	args := []string{
-		"--print",
-		"--output-format", outputFormat,
-		"--permission-mode", permissionMode,
-	}
+	args := buildClaudeArgs(permissionMode, outputFormat)
 	if model := os.Getenv("CLAUDE_RUNNER_MODEL"); model != "" {
 		args = append(args, "--model", model)
 	}
@@ -146,6 +142,25 @@ func runClaude(req request) (string, time.Duration, error) {
 		return "", time.Since(start), fmt.Errorf("claude failed: %w: %s", err, truncate(string(raw), 2000))
 	}
 	return string(raw), time.Since(start), nil
+}
+
+func buildClaudeArgs(permissionMode, outputFormat string) []string {
+	args := []string{
+		"--print",
+		"--output-format", outputFormat,
+		"--permission-mode", permissionMode,
+	}
+	sessionID := strings.TrimSpace(os.Getenv("CLAUDE_RUNNER_SESSION_ID"))
+	resumeMode := strings.ToLower(strings.TrimSpace(os.Getenv("CLAUDE_RUNNER_RESUME")))
+	switch {
+	case sessionID != "":
+		args = append(args, "--resume", sessionID)
+	case resumeMode == "continue" || resumeMode == "last":
+		args = append(args, "--continue")
+	case resumeMode != "":
+		args = append(args, "--resume", resumeMode)
+	}
+	return args
 }
 
 func buildPrompt(req request) string {
