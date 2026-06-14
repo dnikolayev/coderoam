@@ -365,7 +365,7 @@ func ensureRunTransportConnected(ctx context.Context, chatTransport transport.Ch
 	}
 	if err := chatTransport.Connect(ctx); err != nil {
 		if statusErr != nil {
-			return false, fmt.Errorf("status: %v; reconnect: %w", statusErr, err)
+			return false, fmt.Errorf("status: %w; reconnect: %w", statusErr, err)
 		}
 		return false, err
 	}

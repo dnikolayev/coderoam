@@ -6,6 +6,13 @@ protocols.
 
 ## Unreleased
 
+## v0.1.17 - 2026-06-14
+
+### Fixed
+
+- Wrapped both transport status and reconnect errors in the daemon reconnect
+  path so CI lint passes while preserving diagnostics.
+
 ## v0.1.16 - 2026-06-14
 
 ### Added
