@@ -1,8 +1,8 @@
 class Coderoam < Formula
   desc "Run each AI coding session in its own mobile group chat"
   homepage "https://github.com/dnikolayev/coderoam"
-  url "https://github.com/dnikolayev/coderoam/archive/refs/tags/v0.1.16.tar.gz"
-  sha256 "fd7581c7d0d6e204794c6bdef93e82486bb5f5ff9634cd19a25b546d9e18adfc"
+  url "https://github.com/dnikolayev/coderoam/archive/refs/tags/v0.1.17.tar.gz"
+  sha256 "db4dedc88eea94cda926de039ae5c4f9c0aca3c2aafbc9fe491ed1964c7ea455"
   license all_of: ["MIT", "GPL-3.0-only"]
 
   head "https://github.com/dnikolayev/coderoam.git", branch: "main"
