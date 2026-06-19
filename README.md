@@ -780,7 +780,7 @@ and `coderoam logs tail` are the first diagnostics to run. See
 
 ## Status
 
-Current implementation: v0.1.18 active-session queue repair.
+Current implementation: v0.1.19 active-session queue repair.
 
 Project maturity: early MVP. The public API, config shape, database schema, and
 runner protocol can still change before v1.0.

@@ -6,6 +6,13 @@ protocols.
 
 ## Unreleased
 
+## v0.1.19 - 2026-06-19
+
+### Fixed
+
+- Replaced the active inbox repair SQL builder with static candidate queries so
+  release lint passes without weakening the session-drift repair behavior.
+
 ## v0.1.18 - 2026-06-19
 
 ### Added

@@ -981,14 +981,44 @@ func (s *Store) RepairableActiveInboxCounts(ctx context.Context, profileID strin
 		staleAfter = 15 * time.Second
 	}
 	cutoff := formatTime(time.Now().Add(-staleAfter))
-	where := activeInboxRepairWhere(activeSessions)
+	protectedSessions := stringSet(activeSessions)
 	for _, binding := range normalized {
-		args := activeInboxRepairArgs(profileID, binding.ChatID, cutoff, activeSessions)
-		var count int
-		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM active_inbox WHERE `+where, args...).Scan(&count); err != nil {
+		rows, err := s.db.QueryContext(ctx, `SELECT session_id
+			FROM active_inbox
+			WHERE profile_id = ?
+				AND chat_id = ?
+				AND status IN ('unread', 'claimed')
+				AND (
+					status = 'unread'
+					OR claimed_at IS NULL
+					OR claimed_at <= ?
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM active_watchers
+					WHERE active_watchers.profile_id = active_inbox.profile_id
+						AND active_watchers.session_id = active_inbox.claimed_by_session_id
+						AND active_watchers.status = 'active'
+						AND active_watchers.heartbeat_at > ?
+				)`, profileID, binding.ChatID, cutoff, cutoff)
+		if err != nil {
 			return nil, err
 		}
-		counts[binding.SessionID] += count
+		for rows.Next() {
+			var rowSessionID string
+			if err := rows.Scan(&rowSessionID); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if !protectedSessions[rowSessionID] {
+				counts[binding.SessionID]++
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
 	}
 	return counts, nil
 }
@@ -1026,25 +1056,83 @@ func (s *Store) repairOrphanedActiveInbox(ctx context.Context, profileID string,
 	defer tx.Rollback()
 
 	cutoff := formatTime(time.Now().Add(-staleAfter))
-	where := activeInboxRepairWhere(activeSessions)
+	protectedSessions := stringSet(activeSessions)
 	total := 0
 	for _, binding := range normalized {
 		if len(targetSessions) > 0 && !targetSessions[binding.SessionID] {
 			continue
 		}
-		args := []any{binding.SessionID, binding.ChatAlias}
-		args = append(args, activeInboxRepairArgs(profileID, binding.ChatID, cutoff, activeSessions)...)
-		result, err := tx.ExecContext(ctx, `UPDATE active_inbox
-			SET session_id = ?, chat_alias = ?, status = 'unread', claimed_at = NULL, claimed_by_session_id = '', done_at = NULL
-			WHERE `+where, args...)
+		rows, err := tx.QueryContext(ctx, `SELECT id, session_id
+			FROM active_inbox
+			WHERE profile_id = ?
+				AND chat_id = ?
+				AND status IN ('unread', 'claimed')
+				AND (
+					status = 'unread'
+					OR claimed_at IS NULL
+					OR claimed_at <= ?
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM active_watchers
+					WHERE active_watchers.profile_id = active_inbox.profile_id
+						AND active_watchers.session_id = active_inbox.claimed_by_session_id
+						AND active_watchers.status = 'active'
+						AND active_watchers.heartbeat_at > ?
+				)`, profileID, binding.ChatID, cutoff, cutoff)
 		if err != nil {
 			return 0, err
 		}
-		affected, err := result.RowsAffected()
-		if err != nil {
+		type candidate struct {
+			id        int64
+			sessionID string
+		}
+		candidates := []candidate{}
+		for rows.Next() {
+			var item candidate
+			if err := rows.Scan(&item.id, &item.sessionID); err != nil {
+				rows.Close()
+				return 0, err
+			}
+			if !protectedSessions[item.sessionID] {
+				candidates = append(candidates, item)
+			}
+		}
+		if err := rows.Close(); err != nil {
 			return 0, err
 		}
-		total += int(affected)
+		if err := rows.Err(); err != nil {
+			return 0, err
+		}
+		for _, item := range candidates {
+			result, err := tx.ExecContext(ctx, `UPDATE active_inbox
+				SET session_id = ?, chat_alias = ?, status = 'unread', claimed_at = NULL, claimed_by_session_id = '', done_at = NULL
+				WHERE id = ?
+					AND profile_id = ?
+					AND chat_id = ?
+					AND session_id = ?
+					AND status IN ('unread', 'claimed')
+					AND (
+						status = 'unread'
+						OR claimed_at IS NULL
+						OR claimed_at <= ?
+					)
+					AND NOT EXISTS (
+						SELECT 1 FROM active_watchers
+						WHERE active_watchers.profile_id = active_inbox.profile_id
+							AND active_watchers.session_id = active_inbox.claimed_by_session_id
+							AND active_watchers.status = 'active'
+							AND active_watchers.heartbeat_at > ?
+					)`,
+				binding.SessionID, binding.ChatAlias, item.id, profileID, binding.ChatID, item.sessionID, cutoff, cutoff)
+			if err != nil {
+				return 0, err
+			}
+			affected, err := result.RowsAffected()
+			if err != nil {
+				return 0, err
+			}
+			total += int(affected)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
@@ -1513,36 +1601,15 @@ func normalizeActiveSessionBindings(bindings []ActiveSessionBinding) ([]ActiveSe
 	return normalized, activeSessions
 }
 
-func activeInboxRepairWhere(activeSessions []string) string {
-	placeholders := make([]string, len(activeSessions))
-	for i := range placeholders {
-		placeholders[i] = "?"
+func stringSet(values []string) map[string]bool {
+	set := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			set[value] = true
+		}
 	}
-	return `profile_id = ?
-		AND chat_id = ?
-		AND status IN ('unread', 'claimed')
-		AND session_id NOT IN (` + strings.Join(placeholders, ",") + `)
-		AND (
-			status = 'unread'
-			OR claimed_at IS NULL
-			OR claimed_at <= ?
-		)
-		AND NOT EXISTS (
-			SELECT 1 FROM active_watchers
-			WHERE active_watchers.profile_id = active_inbox.profile_id
-				AND active_watchers.session_id = active_inbox.claimed_by_session_id
-				AND active_watchers.status = 'active'
-				AND active_watchers.heartbeat_at > ?
-		)`
-}
-
-func activeInboxRepairArgs(profileID, chatID, cutoff string, activeSessions []string) []any {
-	args := []any{profileID, chatID}
-	for _, sessionID := range activeSessions {
-		args = append(args, sessionID)
-	}
-	args = append(args, cutoff, cutoff)
-	return args
+	return set
 }
 
 func TextHash(text string) string {
