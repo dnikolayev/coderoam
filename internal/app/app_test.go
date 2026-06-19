@@ -1044,6 +1044,65 @@ func TestWatchActiveInboxClaimsMatchingSessionJSONL(t *testing.T) {
 	}
 }
 
+func TestWatchActiveInboxRepairsOrphanedRowsBeforeClaim(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Groups = []config.GroupConfig{{
+		ID:              "chat@g.us",
+		Alias:           "codex-room",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "codex-session",
+		Enabled:         true,
+	}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	msg := types.IncomingMessage{
+		ID:        "wa-orphan-watch",
+		ChatID:    "chat@g.us",
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "reach codex",
+		RawText:   "reach codex",
+		Timestamp: time.Now(),
+	}
+	if _, _, err := store.StoreActiveInboxMessage(t.Context(), cfg.App.Profile, "old-room", "old-session", msg); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err = watchActiveInbox(t.Context(), store, cfg, inboxWatchOptions{
+		SessionID:         "codex-session",
+		Format:            "jsonl",
+		ConsumerID:        "test-consumer",
+		PollInterval:      time.Millisecond,
+		HeartbeatInterval: time.Millisecond,
+		StaleAfter:        time.Second,
+		MaxMessages:       1,
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "repaired_orphans=1") {
+		t.Fatalf("stderr missing repair notice:\n%s", stderr.String())
+	}
+	var event struct {
+		Text               string `json:"text"`
+		SessionID          string `json:"session_id"`
+		ClaimedBySessionID string `json:"claimed_by_session_id"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &event); err != nil {
+		t.Fatalf("jsonl output %q: %v", stdout.String(), err)
+	}
+	if event.Text != "reach codex" || event.SessionID != "codex-session" || event.ClaimedBySessionID != "codex-session" {
+		t.Fatalf("event = %+v", event)
+	}
+}
+
 func TestWatchActiveInboxSkipsStaleClaimedRow(t *testing.T) {
 	t.Parallel()
 	cfg := config.Default()
@@ -1125,6 +1184,140 @@ func TestWatchActiveInboxSkipsStaleClaimedRow(t *testing.T) {
 	}
 }
 
+func TestInboxDrainRepairsOrphanedSameChatSessionRows(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(dir, "bridge.sqlite3")
+	cfg.Groups = []config.GroupConfig{{
+		ID:              "chat@g.us",
+		Alias:           "codex-room",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "codex-session",
+		Enabled:         true,
+	}}
+	path := filepath.Join(dir, "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := types.IncomingMessage{
+		ID:        "wa-orphan-drain",
+		ChatID:    "chat@g.us",
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "queued on old session",
+		RawText:   "queued on old session",
+		Timestamp: time.Now(),
+	}
+	if _, _, err := store.StoreActiveInboxMessage(t.Context(), cfg.App.Profile, "old-room", "old-session", msg); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	state := &cliState{configPath: path}
+	cmd := state.inboxCommand()
+	cmd.SetArgs([]string{"drain", "--session-id", "codex-session"})
+	out, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"WhatsApp inbox message #",
+		"Chat: codex-room (chat@g.us)",
+		"Session: codex-session",
+		"queued on old session",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("drain output missing %q:\n%s", want, out)
+		}
+	}
+	store, err = db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	claimed, err := store.ListActiveInbox(t.Context(), cfg.App.Profile, "claimed", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 1 || claimed[0].SessionID != "codex-session" || claimed[0].ClaimedBySessionID != "codex-session" {
+		t.Fatalf("claimed = %+v", claimed)
+	}
+}
+
+func TestInboxDrainRepairsOnlyRequestedSession(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(dir, "bridge.sqlite3")
+	cfg.Groups = []config.GroupConfig{
+		{
+			ID:              "codex@g.us",
+			Alias:           "codex-room",
+			Mode:            config.GroupModeActiveSession,
+			ActiveSessionID: "codex-session",
+			Enabled:         true,
+		},
+		{
+			ID:              "claude@g.us",
+			Alias:           "claude-room",
+			Mode:            config.GroupModeActiveSession,
+			ActiveSessionID: "claude-session",
+			Enabled:         true,
+		},
+	}
+	path := filepath.Join(dir, "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, msg := range []types.IncomingMessage{
+		{ID: "wa-codex-orphan", ChatID: "codex@g.us", SenderID: "sender@s.whatsapp.net", Text: "codex orphan", RawText: "codex orphan", Timestamp: time.Now()},
+		{ID: "wa-claude-orphan", ChatID: "claude@g.us", SenderID: "sender@s.whatsapp.net", Text: "claude orphan", RawText: "claude orphan", Timestamp: time.Now()},
+	} {
+		if _, _, err := store.StoreActiveInboxMessage(t.Context(), cfg.App.Profile, "old-room", "old-session", msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	state := &cliState{configPath: path}
+	cmd := state.inboxCommand()
+	cmd.SetArgs([]string{"drain", "--session-id", "codex-session"})
+	out, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "codex orphan") {
+		t.Fatalf("drain output missing codex row:\n%s", out)
+	}
+	if strings.Contains(out, "claude orphan") {
+		t.Fatalf("drain output included claude row:\n%s", out)
+	}
+	store, err = db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	claudeRow, err := store.GetActiveInboxByExternalID(t.Context(), cfg.App.Profile, "claude@g.us", "wa-claude-orphan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claudeRow.SessionID != "old-session" || claudeRow.Status != "unread" {
+		t.Fatalf("claude row was repaired by codex drain: %+v", claudeRow)
+	}
+}
+
 func TestInboxDrainSurfacesSameSessionClaimedRows(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
@@ -1177,6 +1370,57 @@ func TestInboxDrainSurfacesSameSessionClaimedRows(t *testing.T) {
 	}
 	if strings.Contains(out, "No pending WhatsApp inbox messages.") {
 		t.Fatalf("drain hid claimed row:\n%s", out)
+	}
+}
+
+func TestActiveStatusReportsRepairableRows(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(dir, "bridge.sqlite3")
+	cfg.Groups = []config.GroupConfig{{
+		ID:              "chat@g.us",
+		Alias:           "codex-room",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "codex-session",
+		Enabled:         true,
+	}}
+	path := filepath.Join(dir, "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.StoreActiveInboxMessage(t.Context(), cfg.App.Profile, "old-room", "old-session", types.IncomingMessage{
+		ID:        "wa-status-orphan",
+		ChatID:    "chat@g.us",
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "status should show this",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	state := &cliState{configPath: path}
+	cmd := state.activeCommand()
+	cmd.SetArgs([]string{"status"})
+	out, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"REPAIRABLE",
+		"codex-session",
+		"inbox_repairable: 1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("active status output missing %q:\n%s", want, out)
+		}
 	}
 }
 

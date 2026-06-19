@@ -194,6 +194,13 @@ func (s *cliState) runCommand() *cobra.Command {
 					fmt.Printf("[active-inbox] migrated=%d chat=%s\n", migrated, logging.Redact(group.ID))
 				}
 			}
+			repaired, err := repairActiveInboxForConfig(ctx, store, cfg)
+			if err != nil {
+				return err
+			}
+			if repaired > 0 {
+				fmt.Printf("[active-inbox] repaired_orphans=%d\n", repaired)
+			}
 			rescheduled, err := bridgeRouter.ScheduleUnreadActiveFallbacks(ctx, &cfg, 100)
 			if err != nil {
 				return err

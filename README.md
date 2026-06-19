@@ -780,7 +780,7 @@ and `coderoam logs tail` are the first diagnostics to run. See
 
 ## Status
 
-Current implementation: v0.1.17 parallel mobile agent sessions.
+Current implementation: v0.1.18 active-session queue repair.
 
 Project maturity: early MVP. The public API, config shape, database schema, and
 runner protocol can still change before v1.0.
@@ -803,6 +803,8 @@ Implemented:
 - Built-in Codex and Claude runner presets, including explicit coding modes.
 - Important-only WhatsApp notification mode for active Codex and Claude runners.
 - Active-session inbox relay for continuing the current Codex chat from WhatsApp without spawning a competing Codex process.
+- Active-session queue repair for obsolete same-chat session IDs after group or
+  session reconfiguration, with per-session repair diagnostics.
 - One-command active-session group creation for parallel Codex work lanes.
 - Local approval/input queue commands.
 - Cross-platform active-session watcher service definitions.

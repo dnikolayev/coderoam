@@ -6,6 +6,22 @@ protocols.
 
 ## Unreleased
 
+## v0.1.18 - 2026-06-19
+
+### Added
+
+- Active-session diagnostics now show per-session unread and repairable inbox
+  rows, and `doctor` reports repairable active inbox rows before they strand a
+  WhatsApp turn.
+
+### Fixed
+
+- Repaired same-chat active inbox rows that were left on obsolete session IDs
+  after active group/session reconfiguration. `inbox next`, `inbox drain`, and
+  `inbox watch` repair only the requested session before claiming, while daemon
+  startup safely repairs all unambiguous active sessions without crossing
+  Codex/Claude lanes.
+
 ## v0.1.17 - 2026-06-14
 
 ### Fixed

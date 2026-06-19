@@ -84,6 +84,9 @@ func (s *cliState) inboxCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if _, err := repairActiveInboxForSession(cmd.Context(), store, cfg, claimSessionID); err != nil {
+				return err
+			}
 			deadline := time.Now().Add(time.Duration(timeoutSeconds) * time.Second)
 			for {
 				record, ok, err := store.ClaimNextActiveInboxForSession(cmd.Context(), cfg.App.Profile, claimSessionID)
@@ -133,6 +136,9 @@ func (s *cliState) inboxCommand() *cobra.Command {
 			}
 			claimSessionID, err := requireInboxSessionID(cfg, drainSessionID)
 			if err != nil {
+				return err
+			}
+			if _, err := repairActiveInboxForSession(cmd.Context(), store, cfg, claimSessionID); err != nil {
 				return err
 			}
 			records := []db.ActiveInboxRecord{}
@@ -373,6 +379,11 @@ func watchActiveInbox(ctx context.Context, store *db.Store, cfg config.Config, o
 		defer cancel()
 		_ = store.ReleaseActiveWatcher(releaseCtx, cfg.App.Profile, sessionID, consumerID)
 	}()
+	if repaired, err := repairActiveInboxForSession(ctx, store, cfg, sessionID); err != nil {
+		return err
+	} else if repaired > 0 {
+		fmt.Fprintf(stderr, "[active-inbox] repaired_orphans=%d session=%s\n", repaired, sessionID)
+	}
 	fmt.Fprintf(stderr, "[watching] session=%s consumer=%s\n", sessionID, consumerID)
 
 	pollTicker := time.NewTicker(pollInterval)

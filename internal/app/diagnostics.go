@@ -126,8 +126,14 @@ func (s *cliState) doctorCommand() *cobra.Command {
 			if err != nil {
 				fmt.Printf("database: error (%s)\n", err)
 			} else {
-				_ = store.Close()
 				fmt.Printf("database: ok (%s)\n", config.ResolveDatabasePath(cfg))
+				if _, repairableTotal, repairErr := repairableActiveInboxCounts(cmd.Context(), store, cfg); repairErr == nil {
+					fmt.Printf("active_inbox_repairable: %d\n", repairableTotal)
+					if repairableTotal > 0 {
+						fmt.Println("active_inbox_repair: run coderoam inbox drain --session-id <session-id> or restart coderoam run")
+					}
+				}
+				_ = store.Close()
 			}
 			printSessionPermissionChecks(cfg.App.Profile)
 			if _, err := os.Stat(config.SessionStorePath(cfg.App.Profile)); err != nil {
@@ -260,6 +266,9 @@ func (s *cliState) printStatus(ctx context.Context) error {
 		if activeErr == nil {
 			fmt.Printf("active_inbox_unread: %d\n", activeCounts["unread"])
 			fmt.Printf("active_inbox_claimed: %d\n", activeCounts["claimed"])
+		}
+		if _, repairableTotal, repairErr := repairableActiveInboxCounts(ctx, store, cfg); repairErr == nil {
+			fmt.Printf("active_inbox_repairable: %d\n", repairableTotal)
 		}
 		activeOutboxPending, activeOutboxErr := store.ActiveOutboxPendingCount(ctx, cfg.App.Profile)
 		if activeOutboxErr == nil {

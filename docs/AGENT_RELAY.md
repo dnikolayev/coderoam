@@ -66,6 +66,11 @@ Rules:
 - `inbox drain` prints unread rows first. If no unread rows exist but this
   session already has claimed rows, it prints those rows too so a watcher-claimed
   message cannot stay hidden behind `No pending WhatsApp inbox messages.`
+- If an active group was reconfigured and old WhatsApp rows are still attached
+  to an obsolete session id, `inbox next`, `inbox drain`, and `inbox watch`
+  repair rows only for the requested `--session-id` before claiming. Use
+  `coderoam active status` or `coderoam doctor` to see repairable rows; daemon
+  startup also repairs unambiguous rows safely for all enabled active sessions.
 - Treat watched or drained prompt blocks as user input.
 - Mark every claimed inbox row done after handling it.
 - Normal `inbox next`, `drain`, and `watch` reads do not auto-recover old

@@ -385,6 +385,180 @@ func TestActiveInboxRecoveryKeepsLiveWatcherClaims(t *testing.T) {
 	}
 }
 
+func TestRepairOrphanedActiveInboxAdoptsUnreadRowsForCurrentChat(t *testing.T) {
+	t.Parallel()
+	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	msg := types.IncomingMessage{
+		ID:        "wa-orphan-unread",
+		ChatID:    "chat@g.us",
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "adopt me",
+		Timestamp: time.Now(),
+	}
+	if _, _, err := store.StoreActiveInboxMessage(t.Context(), "test", "old-alias", "old-session", msg); err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := store.RepairOrphanedActiveInbox(t.Context(), "test", []ActiveSessionBinding{{
+		ChatID:    "chat@g.us",
+		ChatAlias: "codex-session",
+		SessionID: "codex-session",
+	}}, 15*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired != 1 {
+		t.Fatalf("repaired = %d, want 1", repaired)
+	}
+	_, ok, err := store.ClaimNextActiveInboxForSession(t.Context(), "test", "old-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("old session claimed repaired row")
+	}
+	claimed, ok, err := store.ClaimNextActiveInboxForSession(t.Context(), "test", "codex-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || claimed.ExternalMessageID != "wa-orphan-unread" || claimed.ChatAlias != "codex-session" || claimed.SessionID != "codex-session" {
+		t.Fatalf("current session claim = %+v ok=%t", claimed, ok)
+	}
+}
+
+func TestRepairOrphanedActiveInboxPreservesOtherEnabledSessions(t *testing.T) {
+	t.Parallel()
+	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	msg := types.IncomingMessage{
+		ID:        "wa-other-session",
+		ChatID:    "chat-a@g.us",
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "do not adopt",
+		Timestamp: time.Now(),
+	}
+	if _, _, err := store.StoreActiveInboxMessage(t.Context(), "test", "old-alias", "session-b", msg); err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := store.RepairOrphanedActiveInbox(t.Context(), "test", []ActiveSessionBinding{
+		{ChatID: "chat-a@g.us", ChatAlias: "alias-a", SessionID: "session-a"},
+		{ChatID: "chat-b@g.us", ChatAlias: "alias-b", SessionID: "session-b"},
+	}, 15*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired != 0 {
+		t.Fatalf("repaired = %d, want 0", repaired)
+	}
+	claimed, ok, err := store.ClaimNextActiveInboxForSession(t.Context(), "test", "session-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || claimed.ExternalMessageID != "wa-other-session" {
+		t.Fatalf("session-b claim = %+v ok=%t", claimed, ok)
+	}
+}
+
+func TestRepairOrphanedActiveInboxSkipsFreshClaimedWatcher(t *testing.T) {
+	t.Parallel()
+	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	msg := types.IncomingMessage{
+		ID:        "wa-fresh-watcher",
+		ChatID:    "chat@g.us",
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "claimed elsewhere",
+		Timestamp: time.Now(),
+	}
+	if _, _, err := store.StoreActiveInboxMessage(t.Context(), "test", "old-alias", "old-session", msg); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.ClaimNextActiveInboxForSession(t.Context(), "test", "old-session"); err != nil {
+		t.Fatal(err)
+	} else if !ok {
+		t.Fatal("expected old session claim")
+	}
+	if _, acquired, err := store.AcquireActiveWatcher(t.Context(), "test", "old-session", "host:111", 111, 15*time.Second, false); err != nil {
+		t.Fatal(err)
+	} else if !acquired {
+		t.Fatal("expected watcher lock")
+	}
+	repaired, err := store.RepairOrphanedActiveInbox(t.Context(), "test", []ActiveSessionBinding{{
+		ChatID:    "chat@g.us",
+		ChatAlias: "codex-session",
+		SessionID: "codex-session",
+	}}, 15*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired != 0 {
+		t.Fatalf("repaired = %d, want 0", repaired)
+	}
+	claimed, err := store.ListActiveInbox(t.Context(), "test", "claimed", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 1 || claimed[0].SessionID != "old-session" || claimed[0].ClaimedBySessionID != "old-session" {
+		t.Fatalf("claimed rows = %+v", claimed)
+	}
+}
+
+func TestRepairOrphanedActiveInboxRequeuesStaleClaimedRow(t *testing.T) {
+	t.Parallel()
+	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	msg := types.IncomingMessage{
+		ID:        "wa-stale-claimed",
+		ChatID:    "chat@g.us",
+		SenderID:  "sender@s.whatsapp.net",
+		Text:      "stale claim",
+		Timestamp: time.Now(),
+	}
+	if _, _, err := store.StoreActiveInboxMessage(t.Context(), "test", "old-alias", "old-session", msg); err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := store.ClaimNextActiveInboxForSession(t.Context(), "test", "old-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected old session claim")
+	}
+	if _, err := store.db.ExecContext(t.Context(), `UPDATE active_inbox SET claimed_at = ? WHERE id = ?`, formatTime(time.Now().Add(-time.Minute)), claimed.ID); err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := store.RepairOrphanedActiveInbox(t.Context(), "test", []ActiveSessionBinding{{
+		ChatID:    "chat@g.us",
+		ChatAlias: "codex-session",
+		SessionID: "codex-session",
+	}}, 15*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired != 1 {
+		t.Fatalf("repaired = %d, want 1", repaired)
+	}
+	current, ok, err := store.ClaimNextActiveInboxForSession(t.Context(), "test", "codex-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || current.ExternalMessageID != "wa-stale-claimed" || current.ClaimedBySessionID != "codex-session" {
+		t.Fatalf("current session claim = %+v ok=%t", current, ok)
+	}
+}
+
 func TestActiveInboxClaimsOnlyMatchingSession(t *testing.T) {
 	t.Parallel()
 	store, err := Open(filepath.Join(t.TempDir(), "bridge.sqlite3"))

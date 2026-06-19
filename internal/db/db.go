@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -102,6 +103,12 @@ type ActiveWatcherRecord struct {
 	Status      string
 	StartedAt   time.Time
 	HeartbeatAt time.Time
+}
+
+type ActiveSessionBinding struct {
+	ChatID    string
+	ChatAlias string
+	SessionID string
 }
 
 type PendingInteractionRecord struct {
@@ -946,6 +953,105 @@ func (s *Store) ActiveInboxCounts(ctx context.Context, profileID string) (map[st
 	return counts, rows.Err()
 }
 
+func (s *Store) ActiveInboxUnreadCountsBySession(ctx context.Context, profileID string) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT session_id, COUNT(*) FROM active_inbox WHERE profile_id = ? AND status = 'unread' GROUP BY session_id`, profileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var sessionID string
+		var count int
+		if err := rows.Scan(&sessionID, &count); err != nil {
+			return nil, err
+		}
+		counts[sessionID] = count
+	}
+	return counts, rows.Err()
+}
+
+func (s *Store) RepairableActiveInboxCounts(ctx context.Context, profileID string, bindings []ActiveSessionBinding, staleAfter time.Duration) (map[string]int, error) {
+	normalized, activeSessions := normalizeActiveSessionBindings(bindings)
+	counts := map[string]int{}
+	if len(normalized) == 0 || len(activeSessions) == 0 {
+		return counts, nil
+	}
+	if staleAfter <= 0 {
+		staleAfter = 15 * time.Second
+	}
+	cutoff := formatTime(time.Now().Add(-staleAfter))
+	where := activeInboxRepairWhere(activeSessions)
+	for _, binding := range normalized {
+		args := activeInboxRepairArgs(profileID, binding.ChatID, cutoff, activeSessions)
+		var count int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM active_inbox WHERE `+where, args...).Scan(&count); err != nil {
+			return nil, err
+		}
+		counts[binding.SessionID] += count
+	}
+	return counts, nil
+}
+
+func (s *Store) RepairOrphanedActiveInbox(ctx context.Context, profileID string, bindings []ActiveSessionBinding, staleAfter time.Duration) (int, error) {
+	return s.repairOrphanedActiveInbox(ctx, profileID, bindings, nil, staleAfter)
+}
+
+func (s *Store) RepairOrphanedActiveInboxForSessions(ctx context.Context, profileID string, bindings []ActiveSessionBinding, sessionIDs []string, staleAfter time.Duration) (int, error) {
+	targetSessions := map[string]bool{}
+	for _, sessionID := range sessionIDs {
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID != "" {
+			targetSessions[sessionID] = true
+		}
+	}
+	if len(targetSessions) == 0 {
+		return 0, nil
+	}
+	return s.repairOrphanedActiveInbox(ctx, profileID, bindings, targetSessions, staleAfter)
+}
+
+func (s *Store) repairOrphanedActiveInbox(ctx context.Context, profileID string, bindings []ActiveSessionBinding, targetSessions map[string]bool, staleAfter time.Duration) (int, error) {
+	normalized, activeSessions := normalizeActiveSessionBindings(bindings)
+	if len(normalized) == 0 || len(activeSessions) == 0 {
+		return 0, nil
+	}
+	if staleAfter <= 0 {
+		staleAfter = 15 * time.Second
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	cutoff := formatTime(time.Now().Add(-staleAfter))
+	where := activeInboxRepairWhere(activeSessions)
+	total := 0
+	for _, binding := range normalized {
+		if len(targetSessions) > 0 && !targetSessions[binding.SessionID] {
+			continue
+		}
+		args := []any{binding.SessionID, binding.ChatAlias}
+		args = append(args, activeInboxRepairArgs(profileID, binding.ChatID, cutoff, activeSessions)...)
+		result, err := tx.ExecContext(ctx, `UPDATE active_inbox
+			SET session_id = ?, chat_alias = ?, status = 'unread', claimed_at = NULL, claimed_by_session_id = '', done_at = NULL
+			WHERE `+where, args...)
+		if err != nil {
+			return 0, err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		total += int(affected)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
 func (s *Store) AcquireActiveWatcher(ctx context.Context, profileID, sessionID, consumerID string, pid int, staleAfter time.Duration, takeover bool) (ActiveWatcherRecord, bool, error) {
 	if strings.TrimSpace(profileID) == "" {
 		return ActiveWatcherRecord{}, false, fmt.Errorf("profile id is required")
@@ -1362,6 +1468,81 @@ func (s *Store) LatestAuditEvent(ctx context.Context, profileID, eventType, targ
 		return AuditEventRecord{}, false, err
 	}
 	return record, true, nil
+}
+
+func normalizeActiveSessionBindings(bindings []ActiveSessionBinding) ([]ActiveSessionBinding, []string) {
+	activeSessionSet := map[string]bool{}
+	byChat := map[string]ActiveSessionBinding{}
+	ambiguousChats := map[string]bool{}
+	for _, binding := range bindings {
+		chatID := strings.TrimSpace(binding.ChatID)
+		sessionID := strings.TrimSpace(binding.SessionID)
+		if chatID == "" || sessionID == "" {
+			continue
+		}
+		chatAlias := strings.TrimSpace(binding.ChatAlias)
+		activeSessionSet[sessionID] = true
+		if _, exists := byChat[chatID]; exists {
+			ambiguousChats[chatID] = true
+			continue
+		}
+		byChat[chatID] = ActiveSessionBinding{
+			ChatID:    chatID,
+			ChatAlias: chatAlias,
+			SessionID: sessionID,
+		}
+	}
+	normalized := make([]ActiveSessionBinding, 0, len(byChat))
+	for chatID, binding := range byChat {
+		if ambiguousChats[chatID] {
+			continue
+		}
+		normalized = append(normalized, binding)
+	}
+	sort.Slice(normalized, func(i, j int) bool {
+		if normalized[i].ChatID == normalized[j].ChatID {
+			return normalized[i].SessionID < normalized[j].SessionID
+		}
+		return normalized[i].ChatID < normalized[j].ChatID
+	})
+	activeSessions := make([]string, 0, len(activeSessionSet))
+	for sessionID := range activeSessionSet {
+		activeSessions = append(activeSessions, sessionID)
+	}
+	sort.Strings(activeSessions)
+	return normalized, activeSessions
+}
+
+func activeInboxRepairWhere(activeSessions []string) string {
+	placeholders := make([]string, len(activeSessions))
+	for i := range placeholders {
+		placeholders[i] = "?"
+	}
+	return `profile_id = ?
+		AND chat_id = ?
+		AND status IN ('unread', 'claimed')
+		AND session_id NOT IN (` + strings.Join(placeholders, ",") + `)
+		AND (
+			status = 'unread'
+			OR claimed_at IS NULL
+			OR claimed_at <= ?
+		)
+		AND NOT EXISTS (
+			SELECT 1 FROM active_watchers
+			WHERE active_watchers.profile_id = active_inbox.profile_id
+				AND active_watchers.session_id = active_inbox.claimed_by_session_id
+				AND active_watchers.status = 'active'
+				AND active_watchers.heartbeat_at > ?
+		)`
+}
+
+func activeInboxRepairArgs(profileID, chatID, cutoff string, activeSessions []string) []any {
+	args := []any{profileID, chatID}
+	for _, sessionID := range activeSessions {
+		args = append(args, sessionID)
+	}
+	args = append(args, cutoff, cutoff)
+	return args
 }
 
 func TextHash(text string) string {

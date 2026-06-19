@@ -101,13 +101,17 @@ func (s *cliState) activeCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			repaired, err := repairActiveInboxForConfig(cmd.Context(), store, cfg)
+			if err != nil {
+				return err
+			}
 			inviteRecipients := activeStartInviteRecipients(participants, startInviteTo)
 			inviteResults, err := sendActiveSessionInvites(cmd.Context(), chatTransport, cfg, chat.ID, startName, inviteRecipients)
 			if err != nil {
 				return err
 			}
 			fmt.Printf("created active group id=%s name=%q participants=%d\n", chat.ID, chat.DisplayName, chat.ParticipantCount)
-			fmt.Printf("active group=%s alias=%s session=%s runner=%s managed=true migrated=%d\n", chat.ID, startAlias, startSessionID, nonEmpty(startRunner, "-"), migrated)
+			fmt.Printf("active group=%s alias=%s session=%s runner=%s managed=true migrated=%d repaired=%d\n", chat.ID, startAlias, startSessionID, nonEmpty(startRunner, "-"), migrated, repaired)
 			for _, result := range inviteResults {
 				fmt.Printf("sent invite id=%s to=%s\n", result.ID, logging.Redact(result.Recipient))
 			}
@@ -173,7 +177,11 @@ func (s *cliState) activeCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("active group=%s alias=%s session=%s runner=%s managed=%t migrated=%d\n", args[0], alias, sessionID, nonEmpty(existing.Runner, "-"), existing.RelayManaged || enableManaged, migrated)
+			repaired, err := repairActiveInboxForConfig(cmd.Context(), store, cfg)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("active group=%s alias=%s session=%s runner=%s managed=%t migrated=%d repaired=%d\n", args[0], alias, sessionID, nonEmpty(existing.Runner, "-"), existing.RelayManaged || enableManaged, migrated, repaired)
 			return nil
 		},
 	}
@@ -201,6 +209,14 @@ func (s *cliState) activeCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			unreadBySession, err := store.ActiveInboxUnreadCountsBySession(cmd.Context(), cfg.App.Profile)
+			if err != nil {
+				return err
+			}
+			repairableBySession, repairableTotal, err := repairableActiveInboxCounts(cmd.Context(), store, cfg)
+			if err != nil {
+				return err
+			}
 			outboxPending, err := store.ActiveOutboxPendingCount(cmd.Context(), cfg.App.Profile)
 			if err != nil {
 				return err
@@ -218,7 +234,7 @@ func (s *cliState) activeCommand() *cobra.Command {
 				watchersBySession[watcher.SessionID] = watcher
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "CHAT_ID\tALIAS\tSESSION\tMODE\tRUNNER\tENABLED\tMANAGED\tARCHIVED\tWATCHER\tHEARTBEAT")
+			fmt.Fprintln(w, "CHAT_ID\tALIAS\tSESSION\tMODE\tRUNNER\tENABLED\tMANAGED\tARCHIVED\tUNREAD\tREPAIRABLE\tWATCHER\tHEARTBEAT")
 			for _, group := range cfg.Groups {
 				if group.Mode == config.GroupModeActiveSession {
 					sessionID := config.ActiveSessionID(group)
@@ -228,7 +244,15 @@ func (s *cliState) activeCommand() *cobra.Command {
 						watcherLabel = fmt.Sprintf("%s/%s", watcher.Status, watcher.ConsumerID)
 						heartbeat = watcher.HeartbeatAt.Format(time.RFC3339)
 					}
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%t\t%t\t%t\t%s\t%s\n", group.ID, group.Alias, sessionID, group.Mode, group.Runner, group.Enabled, group.RelayManaged, group.Archived, watcherLabel, heartbeat)
+					unread := 0
+					repairable := 0
+					if group.Enabled && !group.Archived {
+						unread = unreadBySession[sessionID]
+						repairable = repairableBySession[sessionID]
+					}
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%t\t%t\t%t\t%d\t%d\t%s\t%s\n",
+						group.ID, group.Alias, sessionID, group.Mode, group.Runner, group.Enabled, group.RelayManaged, group.Archived,
+						unread, repairable, watcherLabel, heartbeat)
 				}
 			}
 			if err := w.Flush(); err != nil {
@@ -236,6 +260,7 @@ func (s *cliState) activeCommand() *cobra.Command {
 			}
 			fmt.Printf("inbox_unread: %d\n", counts["unread"])
 			fmt.Printf("inbox_claimed: %d\n", counts["claimed"])
+			fmt.Printf("inbox_repairable: %d\n", repairableTotal)
 			fmt.Printf("outbox_pending: %d\n", outboxPending)
 			fmt.Printf("read_receipts_pending: %d\n", readReceiptsPending)
 			return nil
