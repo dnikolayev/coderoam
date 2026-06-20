@@ -134,6 +134,21 @@ coderoam run
 Use `--managed` only for a dedicated relay group that coderoam may archive when
 the session is no longer usable. Leave it off for ordinary groups.
 
+### HealthPorta mrf-3 lane
+
+HealthPorta import-control/MRF work should use a dedicated active-session lane:
+
+```sh
+coderoam active enable <mrf-3-group-id> --alias mrf-3 --session-id mrf-3 --managed
+coderoam service install --session-id mrf-3 --format prompt --takeover
+coderoam service start --session-id mrf-3 --format prompt --takeover
+coderoam active status
+```
+
+The active status row must show alias `mrf-3`, session `mrf-3`, enabled `true`,
+and an active watcher heartbeat. Do not route HealthPorta MRF work through
+`codex-session`.
+
 ## Check What Is Missing
 
 ```sh

@@ -305,6 +305,17 @@ lanes follow the same shape. All lanes can use the same authorized owner, but
 they must not share the same `active_session_id`; otherwise both clients read
 from the same local inbox lane.
 
+For HealthPorta MRF/import-control work, use a dedicated `mrf-3` lane. The
+WhatsApp group display name, local alias, and `active_session_id` should all be
+`mrf-3`. If an existing group has display name `mrf-3` but `active status` shows
+another alias/session, repair it instead of using `codex-session`:
+
+```sh
+coderoam active enable <mrf-3-group-id> --alias mrf-3 --session-id mrf-3 --managed
+coderoam service install --session-id mrf-3 --format prompt --takeover
+coderoam service start --session-id mrf-3 --format prompt --takeover
+```
+
 `active start` creates a dedicated WhatsApp group for that session and sends the
 group invite link by direct message to the `--participants` list. Use
 `--invite-to "<your-phone-number>"` to send the link somewhere else. The user

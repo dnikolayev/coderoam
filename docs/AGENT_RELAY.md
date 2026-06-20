@@ -120,6 +120,18 @@ pinned to a Claude session id. Do not point both groups at the same
 `active_session_id`, because that makes both clients consume the same local
 inbox lane.
 
+For HealthPorta work, do not use `codex-session` as a shared return lane.
+Create or repair a dedicated lane such as `mrf-3` where the WhatsApp group
+display name, local alias, and `active_session_id` all match. If a group display
+name says `mrf-3` but `active status` shows another alias/session, repair it
+with:
+
+```sh
+coderoam active enable <chat-id> --alias mrf-3 --session-id mrf-3 --managed
+coderoam service install --session-id mrf-3 --format prompt --takeover
+coderoam service start --session-id mrf-3 --format prompt --takeover
+```
+
 Groups created with `active start` are relay-managed and should map one
 WhatsApp group to one active session. If a participant leaves that managed
 group, the group is deleted, or only the bridge account remains, the daemon
