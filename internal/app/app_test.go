@@ -1969,6 +1969,53 @@ func TestActiveEnableManagedPreservesRunner(t *testing.T) {
 	}
 }
 
+func TestActiveEnableDefaultsSessionToAlias(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Transport.Type = "fake"
+	cfg.Runner["codex-active"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Env:     map[string]string{"CODEX_RUNNER_SESSION_ID": "codex-session"},
+	}
+	cfg.Groups = []config.GroupConfig{{
+		ID:              "mrf-2@g.us",
+		Alias:           "mrf-2",
+		Runner:          "codex-active",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "codex-session",
+		Enabled:         true,
+	}}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	state := &cliState{configPath: path}
+	cmd := state.activeCommand()
+	cmd.SetArgs([]string{
+		"enable",
+		"mrf-2@g.us",
+		"--alias", "mrf-2",
+		"--managed",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group := updated.Groups[0]
+	if config.ActiveSessionID(group) != "mrf-2" {
+		t.Fatalf("active session id = %q, want mrf-2", config.ActiveSessionID(group))
+	}
+	if group.Runner != "" {
+		t.Fatalf("runner = %q, want stale runner cleared after session change", group.Runner)
+	}
+}
+
 func TestActiveEnableRejectsDuplicateActiveSessionID(t *testing.T) {
 	t.Parallel()
 	cfg := config.Default()

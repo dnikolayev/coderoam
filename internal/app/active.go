@@ -154,12 +154,16 @@ func (s *cliState) activeCommand() *cobra.Command {
 				alias = nonEmpty(existing.Alias, args[0])
 			}
 			if sessionID == "" {
-				sessionID = nonEmpty(config.ActiveSessionID(existing), alias)
+				sessionID = alias
+			}
+			runnerID := existing.Runner
+			if runnerID != "" && config.ActiveSessionID(existing) != "" && config.ActiveSessionID(existing) != sessionID {
+				runnerID = ""
 			}
 			config.UpsertGroup(&cfg, config.GroupConfig{
 				ID:              args[0],
 				Alias:           alias,
-				Runner:          existing.Runner,
+				Runner:          runnerID,
 				Mode:            config.GroupModeActiveSession,
 				ActiveSessionID: sessionID,
 				RelayManaged:    existing.RelayManaged || enableManaged,
@@ -181,7 +185,7 @@ func (s *cliState) activeCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("active group=%s alias=%s session=%s runner=%s managed=%t migrated=%d repaired=%d\n", args[0], alias, sessionID, nonEmpty(existing.Runner, "-"), existing.RelayManaged || enableManaged, migrated, repaired)
+			fmt.Printf("active group=%s alias=%s session=%s runner=%s managed=%t migrated=%d repaired=%d\n", args[0], alias, sessionID, nonEmpty(runnerID, "-"), existing.RelayManaged || enableManaged, migrated, repaired)
 			return nil
 		},
 	}

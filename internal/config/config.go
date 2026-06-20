@@ -469,8 +469,7 @@ func UpsertActiveSessionGroup(cfg *Config, group GroupConfig) {
 	group.ArchiveReason = ""
 	for i := range cfg.Groups {
 		if cfg.Groups[i].ID == group.ID ||
-			(group.Alias != "" && cfg.Groups[i].Alias == group.Alias) ||
-			(group.ActiveSessionID != "" && cfg.Groups[i].Mode == GroupModeActiveSession && ActiveSessionID(cfg.Groups[i]) == group.ActiveSessionID) {
+			(group.Alias != "" && cfg.Groups[i].Alias == group.Alias) {
 			cfg.Groups[i] = group
 			return
 		}
