@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -20,19 +21,23 @@ const (
 )
 
 type Config struct {
-	App         AppConfig               `toml:"app"`
-	Transport   TransportConfig         `toml:"transport"`
-	Trigger     TriggerConfig           `toml:"trigger"`
-	Active      ActiveConfig            `toml:"active"`
-	Security    SecurityConfig          `toml:"security"`
-	RateLimits  RateLimitConfig         `toml:"rate_limits"`
-	Reply       ReplyConfig             `toml:"reply"`
-	Session     SessionConfig           `toml:"session"`
-	Retention   RetentionConfig         `toml:"retention"`
-	Concurrency ConcurrencyConfig       `toml:"concurrency"`
-	Runner      map[string]RunnerConfig `toml:"runner"`
-	Groups      []GroupConfig           `toml:"groups"`
+	App            AppConfig               `toml:"app"`
+	Transport      TransportConfig         `toml:"transport"`
+	Trigger        TriggerConfig           `toml:"trigger"`
+	Active         ActiveConfig            `toml:"active"`
+	Security       SecurityConfig          `toml:"security"`
+	RateLimits     RateLimitConfig         `toml:"rate_limits"`
+	Reply          ReplyConfig             `toml:"reply"`
+	Session        SessionConfig           `toml:"session"`
+	Retention      RetentionConfig         `toml:"retention"`
+	Concurrency    ConcurrencyConfig       `toml:"concurrency"`
+	Runner         map[string]RunnerConfig `toml:"runner"`
+	Groups         []GroupConfig           `toml:"groups"`
+	sourcePath     string
+	sourceRevision [sha256.Size]byte
 }
+
+var ErrConfigChanged = errors.New("config changed since it was loaded")
 
 type AppConfig struct {
 	Profile      string `toml:"profile"`
@@ -235,6 +240,8 @@ func Load(path string) (Config, error) {
 	if err := ValidateActiveSessionBindings(cfg); err != nil {
 		return Config{}, err
 	}
+	cfg.sourcePath = filepath.Clean(path)
+	cfg.sourceRevision = sha256.Sum256(data)
 	return cfg, nil
 }
 
@@ -268,7 +275,22 @@ func Save(path string, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	return saveConfigFile(path, data, cfg)
+}
+
+func saveConfigFile(path string, data []byte, cfg Config) error {
+	return withConfigMutationLock(path, func() error {
+		if cfg.sourcePath == filepath.Clean(path) && cfg.sourceRevision != ([sha256.Size]byte{}) {
+			current, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if sha256.Sum256(current) != cfg.sourceRevision {
+				return fmt.Errorf("%w at %s; reload and retry", ErrConfigChanged, path)
+			}
+		}
+		return atomicWriteConfig(path, data)
+	})
 }
 
 func ApplyDefaults(cfg *Config) {

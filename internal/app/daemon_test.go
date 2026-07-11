@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -481,6 +482,270 @@ func TestRunConfigManagerRetriesLifecycleEventAfterInvalidConfig(t *testing.T) {
 	}
 }
 
+func TestRunConfigManagerDoesNotLetBenignEventHideQueuedArchive(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	initial := config.Default()
+	initial.App.Profile = "test"
+	initial.App.DatabasePath = filepath.Join(dir, "coderoam.sqlite3")
+	initial.Transport.Type = "fake"
+	initial.Groups = []config.GroupConfig{{
+		ID:              "mrf-1@g.us",
+		Alias:           "mrf-1",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "mrf-1",
+		Enabled:         true,
+		RelayManaged:    true,
+	}}
+	if err := config.Save(path, initial); err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.Open(initial.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureProfile(ctx, initial.App.Profile); err != nil {
+		t.Fatal(err)
+	}
+	bridgeRouter := router.New(initial, store, nil)
+	defer bridgeRouter.Stop(context.Background())
+	holder := newRunConfigHolder(initial)
+	manager := newRunConfigManager(path, "", holder, bridgeRouter, store, nil, nil)
+	if err := os.WriteFile(path, []byte("[[groups]\ninvalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	archived, err := manager.HandleRelayGroupLifecycleEvent(ctx, types.GroupEvent{
+		ChatID:           "mrf-1@g.us",
+		ParticipantCount: 3,
+		Timestamp:        time.Now(),
+	})
+	if err != nil || archived || len(manager.pendingLifecycle) != 0 {
+		t.Fatalf("benign event archived=%t err=%v pending=%+v", archived, err, manager.pendingLifecycle)
+	}
+	archived, err = manager.HandleRelayGroupLifecycleEvent(ctx, types.GroupEvent{
+		ChatID:    "mrf-1@g.us",
+		Deleted:   true,
+		Timestamp: time.Now(),
+	})
+	if err == nil || archived || len(manager.pendingLifecycle) != 1 || !manager.pendingLifecycle[0].Deleted {
+		t.Fatalf("delete event archived=%t err=%v pending=%+v", archived, err, manager.pendingLifecycle)
+	}
+	if err := config.Save(path, initial); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Groups) != 1 || !loaded.Groups[0].Archived {
+		t.Fatalf("queued delete was not applied: %+v", loaded.Groups)
+	}
+}
+
+func TestRunConfigManagerArchivesThroughRestartOnlyDiskChange(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	initial := config.Default()
+	initial.App.Profile = "test"
+	initial.App.DatabasePath = filepath.Join(dir, "coderoam.sqlite3")
+	initial.Transport.Type = "fake"
+	initial.Groups = []config.GroupConfig{{
+		ID:              "mrf-1@g.us",
+		Alias:           "mrf-1",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "mrf-1",
+		Enabled:         true,
+		RelayManaged:    true,
+	}}
+	if err := config.Save(path, initial); err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.Open(initial.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureProfile(ctx, initial.App.Profile); err != nil {
+		t.Fatal(err)
+	}
+	bridgeRouter := router.New(initial, store, nil)
+	defer bridgeRouter.Stop(context.Background())
+	holder := newRunConfigHolder(initial)
+	manager := newRunConfigManager(path, "", holder, bridgeRouter, store, nil, nil)
+	restartOnly, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartOnly.Transport.DownloadMedia = true
+	if err := config.Save(path, restartOnly); err != nil {
+		t.Fatal(err)
+	}
+
+	archived, err := manager.HandleRelayGroupLifecycleEvent(ctx, types.GroupEvent{
+		ChatID:    "mrf-1@g.us",
+		Deleted:   true,
+		Timestamp: time.Now(),
+	})
+	if err != nil || !archived {
+		t.Fatalf("restart-only lifecycle archived=%t err=%v", archived, err)
+	}
+	if len(manager.pendingLifecycle) != 0 {
+		t.Fatalf("restart-only lifecycle was left pending: %+v", manager.pendingLifecycle)
+	}
+	diskCfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !diskCfg.Transport.DownloadMedia || len(diskCfg.Groups) != 1 || !diskCfg.Groups[0].Archived {
+		t.Fatalf("disk config lost restart-only change or archive: %+v", diskCfg)
+	}
+	liveCfg := holder.Load()
+	if liveCfg.Transport.DownloadMedia || len(liveCfg.Groups) != 1 || !liveCfg.Groups[0].Archived {
+		t.Fatalf("live config did not isolate restart-only change while archiving: %+v", liveCfg)
+	}
+}
+
+func TestRunConfigManagerRetriesQueuedLifecycleThroughRestartOnlyDiskChange(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	initial := config.Default()
+	initial.App.Profile = "test"
+	initial.App.DatabasePath = filepath.Join(dir, "coderoam.sqlite3")
+	initial.Transport.Type = "fake"
+	initial.Groups = []config.GroupConfig{{
+		ID:              "mrf-1@g.us",
+		Alias:           "mrf-1",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "mrf-1",
+		Enabled:         true,
+		RelayManaged:    true,
+	}}
+	if err := config.Save(path, initial); err != nil {
+		t.Fatal(err)
+	}
+	runtimeConfig, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.Open(initial.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureProfile(ctx, initial.App.Profile); err != nil {
+		t.Fatal(err)
+	}
+	target := &retryingRunConfigTarget{}
+	manager := newRunConfigManager(path, "", newRunConfigHolder(runtimeConfig), target, store, nil, nil)
+	manager.pendingLifecycle = []types.GroupEvent{{
+		ChatID:    "mrf-1@g.us",
+		Deleted:   true,
+		Timestamp: time.Now(),
+	}}
+	restartOnly := runtimeConfig
+	restartOnly.Transport.DownloadMedia = true
+	if err := config.Save(path, restartOnly); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := manager.Refresh(ctx)
+	if err == nil || changed {
+		t.Fatalf("restart-only refresh changed=%t err=%v", changed, err)
+	}
+	if len(manager.pendingLifecycle) != 0 {
+		t.Fatalf("queued lifecycle was not drained: %+v", manager.pendingLifecycle)
+	}
+	diskCfg, loadErr := config.Load(path)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if !diskCfg.Transport.DownloadMedia || !relayGroupArchived(diskCfg, "mrf-1@g.us") {
+		t.Fatalf("disk config lost restart-only change or archive: %+v", diskCfg)
+	}
+	liveCfg := manager.holder.Load()
+	if liveCfg.Transport.DownloadMedia || !relayGroupArchived(liveCfg, "mrf-1@g.us") {
+		t.Fatalf("live config did not isolate restart-only change while archiving: %+v", liveCfg)
+	}
+}
+
+func TestRunConfigManagerRetriesCleanupAfterInterruptedLifecyclePublication(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	initial := config.Default()
+	initial.App.Profile = "test"
+	initial.App.DatabasePath = filepath.Join(dir, "coderoam.sqlite3")
+	initial.Transport.Type = "fake"
+	initial.Groups = []config.GroupConfig{{
+		ID:              "mrf-1@g.us",
+		Alias:           "mrf-1",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "mrf-1",
+		Enabled:         true,
+		RelayManaged:    true,
+	}}
+	if err := config.Save(path, initial); err != nil {
+		t.Fatal(err)
+	}
+	runtimeConfig, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.Open(initial.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureProfile(ctx, initial.App.Profile); err != nil {
+		t.Fatal(err)
+	}
+	target := &interruptingRunConfigTarget{}
+	manager := newRunConfigManager(path, "", newRunConfigHolder(runtimeConfig), target, store, nil, nil)
+	archived, err := manager.HandleRelayGroupLifecycleEvent(ctx, types.GroupEvent{
+		ChatID:    "mrf-1@g.us",
+		Deleted:   true,
+		Timestamp: time.Now(),
+	})
+	if err == nil || !archived || len(manager.pendingLifecycle) != 1 || !manager.generationDrainPending {
+		t.Fatalf("interrupted lifecycle archived=%t err=%v pending=%+v drain_pending=%t", archived, err, manager.pendingLifecycle, manager.generationDrainPending)
+	}
+	if _, _, err := store.StoreActiveInboxMessage(ctx, initial.App.Profile, "mrf-1", "mrf-1", types.IncomingMessage{
+		ID:        "late-old-generation",
+		ChatID:    "mrf-1@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "owner@lid",
+		Text:      "late write",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	err = manager.retryPendingLifecycleLocked(ctx)
+	manager.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.ListActiveInbox(ctx, initial.App.Profile, "unread", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 || len(manager.pendingLifecycle) != 0 || manager.generationDrainPending || target.setCount != 2 {
+		t.Fatalf("cleanup retry rows=%+v pending=%+v drain_pending=%t set_count=%d", rows, manager.pendingLifecycle, manager.generationDrainPending, target.setCount)
+	}
+}
+
 type retryingRunConfigTarget struct {
 	setCount       int
 	scheduleCount  int
@@ -488,9 +753,47 @@ type retryingRunConfigTarget struct {
 	lastConfigured config.Config
 }
 
-func (t *retryingRunConfigTarget) SetConfig(cfg config.Config) {
+type interruptingRunConfigTarget struct {
+	setCount      int
+	scheduleCount int
+}
+
+func (t *interruptingRunConfigTarget) SetConfigAndWait(context.Context, config.Config) error {
+	t.setCount++
+	if t.setCount == 1 {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
+func (t *interruptingRunConfigTarget) ScheduleUnreadActiveFallbacks(context.Context, *config.Config, int) (int, error) {
+	t.scheduleCount++
+	return 0, nil
+}
+
+type blockingRunConfigTarget struct {
+	published chan struct{}
+	release   chan struct{}
+}
+
+func (t *blockingRunConfigTarget) SetConfigAndWait(ctx context.Context, _ config.Config) error {
+	close(t.published)
+	select {
+	case <-t.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (t *blockingRunConfigTarget) ScheduleUnreadActiveFallbacks(context.Context, *config.Config, int) (int, error) {
+	return 0, nil
+}
+
+func (t *retryingRunConfigTarget) SetConfigAndWait(_ context.Context, cfg config.Config) error {
 	t.setCount++
 	t.lastConfigured = cfg
+	return nil
 }
 
 func (t *retryingRunConfigTarget) ScheduleUnreadActiveFallbacks(context.Context, *config.Config, int) (int, error) {
@@ -547,6 +850,48 @@ func TestRunConfigManagerRetriesPostPublishReconciliation(t *testing.T) {
 	}
 }
 
+func TestRunConfigManagerResumesInterruptedGenerationDrain(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	initial := config.Default()
+	initial.App.Profile = "test"
+	initial.App.DatabasePath = filepath.Join(dir, "coderoam.sqlite3")
+	initial.Transport.Type = "fake"
+	if err := config.Save(path, initial); err != nil {
+		t.Fatal(err)
+	}
+	runtimeConfig, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.Open(initial.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureProfile(ctx, initial.App.Profile); err != nil {
+		t.Fatal(err)
+	}
+	target := &interruptingRunConfigTarget{}
+	manager := newRunConfigManager(path, "", newRunConfigHolder(runtimeConfig), target, store, nil, nil)
+	updated := runtimeConfig
+	updated.Active.AckMode = "verbose"
+	if err := config.Save(path, updated); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := manager.Refresh(ctx)
+	if err == nil || !changed || !manager.generationDrainPending || target.setCount != 1 {
+		t.Fatalf("interrupted refresh changed=%t err=%v drain_pending=%t set_count=%d", changed, err, manager.generationDrainPending, target.setCount)
+	}
+	changed, err = manager.Refresh(ctx)
+	if err != nil || changed || manager.generationDrainPending || manager.reconcilePending || target.setCount != 2 || target.scheduleCount != 1 {
+		t.Fatalf("resumed refresh changed=%t err=%v drain_pending=%t reconcile_pending=%t sets=%d schedules=%d", changed, err, manager.generationDrainPending, manager.reconcilePending, target.setCount, target.scheduleCount)
+	}
+}
+
 func TestRunConfigManagerDoesNotPublishBeforeBindingReconciliation(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -590,6 +935,79 @@ func TestRunConfigManagerDoesNotPublishBeforeBindingReconciliation(t *testing.T)
 	}
 	if len(holder.Load().Groups) != 0 || target.setCount != 0 {
 		t.Fatalf("unreconciled config was published: groups=%+v set_count=%d", holder.Load().Groups, target.setCount)
+	}
+}
+
+func TestRunConfigManagerRepairsWritesFromDrainedGeneration(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	initial := config.Default()
+	initial.App.Profile = "test"
+	initial.App.DatabasePath = filepath.Join(dir, "coderoam.sqlite3")
+	initial.Transport.Type = "fake"
+	initial.Groups = []config.GroupConfig{{
+		ID:              "mrf-1@g.us",
+		Alias:           "mrf-1",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "old-session",
+		Enabled:         true,
+	}}
+	if err := config.Save(path, initial); err != nil {
+		t.Fatal(err)
+	}
+	runtimeConfig, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.Open(initial.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureProfile(ctx, initial.App.Profile); err != nil {
+		t.Fatal(err)
+	}
+	target := &blockingRunConfigTarget{published: make(chan struct{}), release: make(chan struct{})}
+	holder := newRunConfigHolder(runtimeConfig)
+	manager := newRunConfigManager(path, "", holder, target, store, nil, nil)
+	updated := runtimeConfig
+	updated.Groups = slices.Clone(runtimeConfig.Groups)
+	updated.Groups[0].ActiveSessionID = "new-session"
+	if err := config.Save(path, updated); err != nil {
+		t.Fatal(err)
+	}
+	refreshDone := make(chan error, 1)
+	go func() {
+		_, err := manager.Refresh(ctx)
+		refreshDone <- err
+	}()
+	select {
+	case <-target.published:
+	case <-time.After(2 * time.Second):
+		t.Fatal("updated config generation was not published")
+	}
+	if _, _, err := store.StoreActiveInboxMessage(ctx, initial.App.Profile, "mrf-1", "old-session", types.IncomingMessage{
+		ID:        "late-old-generation",
+		ChatID:    "mrf-1@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "owner@lid",
+		Text:      "late write",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	close(target.release)
+	if err := <-refreshDone; err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.ListActiveInbox(ctx, initial.App.Profile, "unread", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].SessionID != "new-session" {
+		t.Fatalf("late previous-generation row was not repaired: %+v", rows)
 	}
 }
 

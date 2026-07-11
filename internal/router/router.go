@@ -34,12 +34,19 @@ type Router struct {
 	activeFallbackDelay     time.Duration
 	activeFallbackLimit     int
 	activeFallbackScheduled map[string]bool
+	configUses              map[*config.Config]*routerConfigUse
 	// stopped is closed exactly once by Stop; scheduled fallback goroutines
 	// watch it so shutdown can drain them deterministically.
 	stopped    chan struct{}
 	stopOnce   sync.Once
+	stopping   bool
 	fallbackWG sync.WaitGroup
 	retiredWG  sync.WaitGroup
+}
+
+type routerConfigUse struct {
+	count int
+	done  chan struct{}
 }
 
 type ProcessResult struct {
@@ -62,6 +69,7 @@ func New(cfg config.Config, store *db.Store, chatTransport transport.ChatTranspo
 		activeFallbackDelay:     time.Duration(cfg.Active.FallbackDelaySeconds) * time.Second,
 		activeFallbackLimit:     cfg.Active.FallbackBatchLimit,
 		activeFallbackScheduled: map[string]bool{},
+		configUses:              map[*config.Config]*routerConfigUse{},
 		stopped:                 make(chan struct{}),
 	}
 	r.cfg.Store(snapshotConfig(cfg))
@@ -91,15 +99,53 @@ func snapshotConfig(cfg config.Config) *config.Config {
 }
 
 func (r *Router) SetConfig(cfg config.Config) {
+	_ = r.setConfig(cfg)
+}
+
+func (r *Router) SetConfigAndWait(ctx context.Context, cfg config.Config) error {
+	for _, drained := range r.setConfig(cfg) {
+		select {
+		case <-drained:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func (r *Router) setConfig(cfg config.Config) []<-chan struct{} {
 	config.ApplyDefaults(&cfg)
-	r.cfg.Store(snapshotConfig(cfg))
+	snapshot := snapshotConfig(cfg)
 	r.mu.Lock()
+	if r.stopping {
+		r.mu.Unlock()
+		return nil
+	}
 	cached := r.runnerCache
 	r.runnerCache = map[string]runner.Runner{}
 	r.activeFallbackDelay = time.Duration(cfg.Active.FallbackDelaySeconds) * time.Second
 	r.activeFallbackLimit = cfg.Active.FallbackBatchLimit
+	// Publish the new snapshot while the cache rotation lock is still held.
+	// A handler that observes this generation will then wait for the empty new
+	// cache instead of inserting its runner into the cache being retired.
+	r.cfg.Store(snapshot)
+	retire := len(cached) > 0
+	if retire {
+		// Register under r.mu. Stop takes the same lock before it starts Wait,
+		// then marks the router stopping so no later Add can race that Wait.
+		r.retiredWG.Add(1)
+	}
+	drained := make([]<-chan struct{}, 0, len(r.configUses))
+	for generation, use := range r.configUses {
+		if generation != snapshot && use.count > 0 {
+			drained = append(drained, use.done)
+		}
+	}
 	r.mu.Unlock()
-	r.retireRunners(cached)
+	if retire {
+		r.retireRunners(cached)
+	}
+	return drained
 }
 
 // Stop shuts the router down: it signals scheduled fallback goroutines to
@@ -107,16 +153,26 @@ func (r *Router) SetConfig(cfg config.Config) {
 // background work has drained. After Stop returns with a nil error it is safe
 // to close the underlying store.
 func (r *Router) Stop(ctx context.Context) error {
-	r.stopOnce.Do(func() { close(r.stopped) })
 	r.mu.Lock()
+	r.stopping = true
+	r.stopOnce.Do(func() { close(r.stopped) })
 	cached := r.runnerCache
 	r.runnerCache = map[string]runner.Runner{}
+	configDrains := make([]<-chan struct{}, 0, len(r.configUses))
+	for _, use := range r.configUses {
+		if use.count > 0 {
+			configDrains = append(configDrains, use.done)
+		}
+	}
 	r.mu.Unlock()
 	err := stopRunners(ctx, cached)
 	drained := make(chan struct{})
 	go func() {
 		r.fallbackWG.Wait()
 		r.retiredWG.Wait()
+		for _, configDrain := range configDrains {
+			<-configDrain
+		}
 		close(drained)
 	}()
 	select {
@@ -129,11 +185,36 @@ func (r *Router) Stop(ctx context.Context) error {
 	return err
 }
 
-func (r *Router) retireRunners(cached map[string]runner.Runner) {
-	if len(cached) == 0 {
-		return
+func (r *Router) acquireConfigSnapshot() (*config.Config, func()) {
+	r.mu.Lock()
+	if r.stopping {
+		r.mu.Unlock()
+		return nil, func() {}
 	}
-	r.retiredWG.Add(1)
+	cfg := r.cfg.Load()
+	if cfg == nil {
+		r.mu.Unlock()
+		return nil, func() {}
+	}
+	use := r.configUses[cfg]
+	if use == nil {
+		use = &routerConfigUse{done: make(chan struct{})}
+		r.configUses[cfg] = use
+	}
+	use.count++
+	r.mu.Unlock()
+	return cfg, func() {
+		r.mu.Lock()
+		use.count--
+		if use.count == 0 {
+			delete(r.configUses, cfg)
+			close(use.done)
+		}
+		r.mu.Unlock()
+	}
+}
+
+func (r *Router) retireRunners(cached map[string]runner.Runner) {
 	go func() {
 		defer r.retiredWG.Done()
 		if err := stopRunners(context.Background(), cached); err != nil {
@@ -146,9 +227,10 @@ func (r *Router) Handle(ctx context.Context, msg types.IncomingMessage) ProcessR
 	lock := r.lockForGroup(msg.ChatID)
 	lock.Lock()
 	defer lock.Unlock()
-	cfg := r.cfg.Load()
+	cfg, releaseConfig := r.acquireConfigSnapshot()
+	defer releaseConfig()
 	if cfg == nil {
-		return ProcessResult{Ignored: true, Reason: "router config is not initialized"}
+		return ProcessResult{Ignored: true, Reason: "router config is not initialized or is stopping"}
 	}
 	result, err := r.process(ctx, cfg, msg)
 	if err != nil {
@@ -254,7 +336,7 @@ func (r *Router) process(ctx context.Context, cfg *config.Config, msg types.Inco
 		if _, connected, err := r.store.ActiveWatcherFresh(ctx, cfg.App.Profile, sessionID, activeWatcherStaleAfter); err != nil {
 			return ProcessResult{}, err
 		} else if !connected && activeSessionFallbackAllowed(cfg, group) {
-			if r.activeFallbackDelayValue() <= 0 {
+			if r.activeFallbackDelayValue(cfg) <= 0 {
 				return r.processActiveSessionFallback(ctx, cfg, msg, group, sessionID)
 			}
 			scheduled := r.scheduleActiveSessionFallback(cfg, msg, group, sessionID)
@@ -423,6 +505,9 @@ func (r *Router) scheduleActiveSessionFallback(cfg *config.Config, msg types.Inc
 	key := activeFallbackScheduleKey(cfg.App.Profile, msg.ChatID, sessionID)
 	r.mu.Lock()
 	delay := r.activeFallbackDelay
+	if r.cfg.Load() != cfg {
+		delay = time.Duration(cfg.Active.FallbackDelaySeconds) * time.Second
+	}
 	if delay < 0 {
 		delay = 0
 	}
@@ -481,7 +566,7 @@ func (r *Router) scheduleActiveSessionFallback(cfg *config.Config, msg types.Inc
 			}()
 			// Load a fresh snapshot per firing: config may have been
 			// reloaded while this goroutine waited on its timer.
-			fireCfg := r.cfg.Load()
+			fireCfg, releaseConfig := r.acquireConfigSnapshot()
 			if fireCfg == nil {
 				cancel()
 				lock.Unlock()
@@ -492,12 +577,14 @@ func (r *Router) scheduleActiveSessionFallback(cfg *config.Config, msg types.Inc
 				result := ProcessResult{Ignored: true, Reason: "active inbox fallback canceled after config reload"}
 				cancel()
 				lock.Unlock()
+				releaseConfig()
 				r.auditRoute(context.Background(), fireCfg, msg, group, result, map[string]any{"async_fallback": true})
 				return
 			}
 			result, err := r.processActiveSessionFallback(ctx, fireCfg, msg, fireGroup, sessionID)
 			cancel()
 			lock.Unlock()
+			releaseConfig()
 			if err != nil {
 				result = ProcessResult{Ignored: true, Reason: err.Error()}
 			}
@@ -533,7 +620,7 @@ func (r *Router) processActiveSessionFallback(ctx context.Context, cfg *config.C
 	} else if connected {
 		return ProcessResult{Reason: "active inbox fallback skipped because watcher connected"}, nil
 	}
-	claimed, err := r.store.ClaimActiveInboxBatchForSession(ctx, cfg.App.Profile, msg.ChatID, sessionID, r.activeFallbackLimitValue())
+	claimed, err := r.store.ClaimActiveInboxBatchForSession(ctx, cfg.App.Profile, msg.ChatID, sessionID, r.activeFallbackLimitValue(cfg))
 	if err != nil {
 		return ProcessResult{}, err
 	}
@@ -560,15 +647,21 @@ func (r *Router) processActiveSessionFallback(ctx context.Context, cfg *config.C
 	return result, nil
 }
 
-func (r *Router) activeFallbackDelayValue() time.Duration {
+func (r *Router) activeFallbackDelayValue(cfg *config.Config) time.Duration {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.cfg.Load() != cfg {
+		return time.Duration(cfg.Active.FallbackDelaySeconds) * time.Second
+	}
 	return r.activeFallbackDelay
 }
 
-func (r *Router) activeFallbackLimitValue() int {
+func (r *Router) activeFallbackLimitValue(cfg *config.Config) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.cfg.Load() != cfg {
+		return cfg.Active.FallbackBatchLimit
+	}
 	return r.activeFallbackLimit
 }
 
@@ -722,15 +815,82 @@ func (r *Router) runnerFor(cfg *config.Config, chatID, runnerID string, runnerCf
 	key := strings.Join([]string{cfg.App.Profile, chatID, runnerID, fmt.Sprintf("%p", cfg)}, "\x00")
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.stopping || r.cfg.Load() != cfg {
+		// This Handle call started on the previous config generation and reached
+		// runner creation after SetConfig rotated the persistent cache. Let its
+		// request finish on a private runner, then stop that process instead of
+		// leaking the old runner into the new generation's cache.
+		return &singleUseRunner{inner: runner.NewProcessRunner(runnerCfg, cfg.RateLimits.MaxRunnerSeconds)}
+	}
 	if r.runnerCache == nil {
 		r.runnerCache = map[string]runner.Runner{}
 	}
 	if cached, ok := r.runnerCache[key]; ok {
 		return cached
 	}
-	cached := runner.NewProcessRunner(runnerCfg, cfg.RateLimits.MaxRunnerSeconds)
+	cached := newManagedPersistentRunner(runnerCfg, cfg.RateLimits.MaxRunnerSeconds)
 	r.runnerCache[key] = cached
 	return cached
+}
+
+type managedPersistentRunner struct {
+	mu        sync.Mutex
+	inner     runner.Runner
+	newRunner func() runner.Runner
+	retired   bool
+}
+
+func newManagedPersistentRunner(runnerCfg config.RunnerConfig, fallbackTimeout int) *managedPersistentRunner {
+	factory := func() runner.Runner {
+		return runner.NewProcessRunner(runnerCfg, fallbackTimeout)
+	}
+	return &managedPersistentRunner{inner: factory(), newRunner: factory}
+}
+
+func (r *managedPersistentRunner) Invoke(ctx context.Context, req runner.Request) (runner.Result, error) {
+	r.mu.Lock()
+	if r.retired {
+		fresh := r.newRunner()
+		r.mu.Unlock()
+		return (&singleUseRunner{inner: fresh}).Invoke(ctx, req)
+	}
+	defer r.mu.Unlock()
+	return r.inner.Invoke(ctx, req)
+}
+
+func (r *managedPersistentRunner) Health(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.inner.Health(ctx)
+}
+
+func (r *managedPersistentRunner) Stop(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.retired = true
+	return r.inner.Stop(ctx)
+}
+
+type singleUseRunner struct {
+	inner runner.Runner
+}
+
+func (r *singleUseRunner) Invoke(ctx context.Context, req runner.Request) (runner.Result, error) {
+	result, err := r.inner.Invoke(ctx, req)
+	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if stopErr := r.inner.Stop(stopCtx); stopErr != nil {
+		fmt.Fprintf(os.Stderr, "stopping single-use runner after config reload: %v\n", stopErr)
+	}
+	return result, err
+}
+
+func (r *singleUseRunner) Health(ctx context.Context) error {
+	return r.inner.Health(ctx)
+}
+
+func (r *singleUseRunner) Stop(ctx context.Context) error {
+	return r.inner.Stop(ctx)
 }
 
 func stopRunners(ctx context.Context, runners map[string]runner.Runner) error {

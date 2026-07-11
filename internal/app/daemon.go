@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -306,21 +307,22 @@ type runIncomingHandler interface {
 }
 
 type runConfigTarget interface {
-	SetConfig(config.Config)
+	SetConfigAndWait(context.Context, config.Config) error
 	ScheduleUnreadActiveFallbacks(context.Context, *config.Config, int) (int, error)
 }
 
 type runConfigManager struct {
-	mu               sync.Mutex
-	path             string
-	profileOverride  string
-	holder           *runConfigHolder
-	target           runConfigTarget
-	store            *db.Store
-	transport        transport.ChatTransport
-	logf             func(string, ...any)
-	reconcilePending bool
-	pendingLifecycle []types.GroupEvent
+	mu                     sync.Mutex
+	path                   string
+	profileOverride        string
+	holder                 *runConfigHolder
+	target                 runConfigTarget
+	store                  *db.Store
+	transport              transport.ChatTransport
+	logf                   func(string, ...any)
+	reconcilePending       bool
+	generationDrainPending bool
+	pendingLifecycle       []types.GroupEvent
 }
 
 type runConfigRefreshingHandler struct {
@@ -346,6 +348,9 @@ func (m *runConfigManager) Refresh(ctx context.Context) (bool, error) {
 	defer m.mu.Unlock()
 	changed, err := m.refreshLocked(ctx)
 	if err != nil {
+		if retryErr := m.retryPendingLifecycleAgainstDiskLocked(ctx); retryErr != nil {
+			return changed, errors.Join(err, retryErr)
+		}
 		return changed, err
 	}
 	if err := m.retryPendingLifecycleLocked(ctx); err != nil {
@@ -364,7 +369,7 @@ func (m *runConfigManager) refreshLocked(ctx context.Context) (bool, error) {
 	}
 	current := m.holder.Load()
 	changed := !reflect.DeepEqual(current, updated)
-	if !changed && !m.reconcilePending {
+	if !changed && !m.reconcilePending && !m.generationDrainPending {
 		return false, nil
 	}
 	if changed {
@@ -373,14 +378,31 @@ func (m *runConfigManager) refreshLocked(ctx context.Context) (bool, error) {
 		}
 	}
 
-	migrated, repaired, err := reconcileRunConfigBindings(ctx, m.store, updated)
-	if err != nil {
-		return false, err
-	}
+	migrated := 0
+	repaired := 0
 	if changed {
+		preMigrated, preRepaired, err := reconcileRunConfigBindings(ctx, m.store, updated)
+		if err != nil {
+			return false, err
+		}
+		migrated += preMigrated
+		repaired += preRepaired
 		m.holder.Store(updated)
-		m.target.SetConfig(updated)
+		m.reconcilePending = true
+		m.generationDrainPending = true
 	}
+	if m.generationDrainPending {
+		if err := m.target.SetConfigAndWait(ctx, updated); err != nil {
+			return changed, err
+		}
+		m.generationDrainPending = false
+	}
+	postMigrated, postRepaired, err := reconcileRunConfigBindings(ctx, m.store, updated)
+	if err != nil {
+		return changed, err
+	}
+	migrated += postMigrated
+	repaired += postRepaired
 	m.reconcilePending = true
 	rescheduled, err := m.target.ScheduleUnreadActiveFallbacks(ctx, &updated, 100)
 	if err != nil {
@@ -414,12 +436,19 @@ func reconcileRunConfigBindings(ctx context.Context, store *db.Store, cfg config
 }
 
 func (m *runConfigManager) HandleRelayGroupLifecycleEvent(ctx context.Context, event types.GroupEvent) (bool, error) {
+	if archive, _ := shouldArchiveRelayGroup(event); !archive {
+		return false, nil
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if _, err := m.refreshLocked(ctx); err != nil {
+		archived, diskErr := m.applyLifecycleEventToLatestDiskLocked(ctx, event)
+		if diskErr == nil {
+			return archived, nil
+		}
 		m.queueLifecycleEventLocked(event)
-		return false, fmt.Errorf("refresh config before group lifecycle event; event queued for retry: %w", err)
+		return false, fmt.Errorf("refresh config before group lifecycle event: %w; disk lifecycle update failed and event was queued: %w", err, diskErr)
 	}
 	if err := m.retryPendingLifecycleLocked(ctx); err != nil {
 		m.queueLifecycleEventLocked(event)
@@ -432,14 +461,78 @@ func (m *runConfigManager) HandleRelayGroupLifecycleEvent(ctx context.Context, e
 	return archived, err
 }
 
+func (m *runConfigManager) applyLifecycleEventToLatestDiskLocked(ctx context.Context, event types.GroupEvent) (bool, error) {
+	const maxConfigSaveAttempts = 5
+	var updated config.Config
+	var archived bool
+	var err error
+	for attempt := 1; attempt <= maxConfigSaveAttempts; attempt++ {
+		diskCfg, loadErr := config.Load(m.path)
+		if loadErr != nil {
+			return false, loadErr
+		}
+		updated, archived, err = handleRelayGroupLifecycleEventForProfile(ctx, diskCfg, m.path, m.store, m.transport, event, m.holder.Load().App.Profile)
+		if err == nil {
+			if !archived && relayGroupArchived(diskCfg, event.ChatID) {
+				updated = diskCfg
+				archived = true
+			}
+			break
+		}
+		if !errors.Is(err, config.ErrConfigChanged) {
+			return false, err
+		}
+	}
+	if err != nil {
+		return false, fmt.Errorf("archive relay group after %d concurrent config updates: %w", maxConfigSaveAttempts, err)
+	}
+	if !archived {
+		return false, nil
+	}
+	liveCfg := m.holder.Load()
+	for _, diskGroup := range updated.Groups {
+		if diskGroup.ID != event.ChatID {
+			continue
+		}
+		for i, liveGroup := range liveCfg.Groups {
+			if liveGroup.ID != event.ChatID {
+				continue
+			}
+			liveCfg.Groups = slices.Clone(liveCfg.Groups)
+			liveCfg.Groups[i].Enabled = false
+			liveCfg.Groups[i].Archived = true
+			liveCfg.Groups[i].ArchivedAt = diskGroup.ArchivedAt
+			liveCfg.Groups[i].ArchiveReason = diskGroup.ArchiveReason
+			return true, m.publishLifecycleConfigLocked(ctx, liveCfg, event.ChatID)
+		}
+		break
+	}
+	return true, nil
+}
+
 func (m *runConfigManager) applyLifecycleEventLocked(ctx context.Context, event types.GroupEvent) (bool, error) {
-	updated, archived, err := handleRelayGroupLifecycleEvent(ctx, m.holder.Load(), m.path, m.store, m.transport, event)
+	liveCfg := m.holder.Load()
+	if relayGroupArchived(liveCfg, event.ChatID) {
+		return true, m.publishLifecycleConfigLocked(ctx, liveCfg, event.ChatID)
+	}
+	updated, archived, err := handleRelayGroupLifecycleEvent(ctx, liveCfg, m.path, m.store, m.transport, event)
 	if err != nil || !archived {
 		return archived, err
 	}
-	m.holder.Store(updated)
-	m.target.SetConfig(updated)
-	return true, nil
+	return true, m.publishLifecycleConfigLocked(ctx, updated, event.ChatID)
+}
+
+func (m *runConfigManager) publishLifecycleConfigLocked(ctx context.Context, cfg config.Config, chatID string) error {
+	m.holder.Store(cfg)
+	m.generationDrainPending = true
+	if err := m.target.SetConfigAndWait(ctx, cfg); err != nil {
+		return err
+	}
+	m.generationDrainPending = false
+	// A previous-generation handler may have written after the lifecycle
+	// helper's first cleanup but before the config generation drained.
+	_, err := m.store.DeleteChatData(ctx, cfg.App.Profile, chatID)
+	return err
 }
 
 func (m *runConfigManager) queueLifecycleEventLocked(event types.GroupEvent) {
@@ -464,6 +557,30 @@ func (m *runConfigManager) retryPendingLifecycleLocked(ctx context.Context) erro
 		}
 	}
 	return nil
+}
+
+func (m *runConfigManager) retryPendingLifecycleAgainstDiskLocked(ctx context.Context) error {
+	for len(m.pendingLifecycle) > 0 {
+		event := m.pendingLifecycle[0]
+		archived, err := m.applyLifecycleEventToLatestDiskLocked(ctx, event)
+		if err != nil {
+			return fmt.Errorf("retry queued group lifecycle event against disk config: %w", err)
+		}
+		m.pendingLifecycle = m.pendingLifecycle[1:]
+		if archived && m.logf != nil {
+			m.logf("[group-event] chat=%s archived=true reason=queued-disk-retry\n", logging.Redact(event.ChatID))
+		}
+	}
+	return nil
+}
+
+func relayGroupArchived(cfg config.Config, chatID string) bool {
+	for _, group := range cfg.Groups {
+		if group.ID == chatID && group.Mode == config.GroupModeActiveSession && group.RelayManaged && group.Archived && !group.Enabled {
+			return true
+		}
+	}
+	return false
 }
 
 func validateRunConfigReload(current config.Config, updated config.Config) error {
@@ -879,6 +996,10 @@ func activeReadReceiptBatches(records []db.ActiveReadReceiptRecord) [][]db.Activ
 }
 
 func handleRelayGroupLifecycleEvent(ctx context.Context, cfg config.Config, configPath string, store *db.Store, chatTransport transport.ChatTransport, event types.GroupEvent) (config.Config, bool, error) {
+	return handleRelayGroupLifecycleEventForProfile(ctx, cfg, configPath, store, chatTransport, event, cfg.App.Profile)
+}
+
+func handleRelayGroupLifecycleEventForProfile(ctx context.Context, cfg config.Config, configPath string, store *db.Store, chatTransport transport.ChatTransport, event types.GroupEvent, profileID string) (config.Config, bool, error) {
 	groupIndex := -1
 	for i, group := range cfg.Groups {
 		if group.ID == event.ChatID && group.Mode == config.GroupModeActiveSession && group.RelayManaged && group.Enabled && !group.Archived {
@@ -900,7 +1021,7 @@ func handleRelayGroupLifecycleEvent(ctx context.Context, cfg config.Config, conf
 			archiveErrText = err.Error()
 		}
 	}
-	deletedRows, err := store.DeleteChatData(ctx, cfg.App.Profile, group.ID)
+	deletedRows, err := store.DeleteChatData(ctx, profileID, group.ID)
 	if err != nil {
 		return cfg, false, err
 	}
@@ -916,7 +1037,7 @@ func handleRelayGroupLifecycleEvent(ctx context.Context, cfg config.Config, conf
 	if err := config.Save(configPath, cfg); err != nil {
 		return cfg, false, err
 	}
-	_ = store.Audit(ctx, cfg.App.Profile, "relay_group_archived", event.SenderID, group.ID, map[string]any{
+	_ = store.Audit(ctx, profileID, "relay_group_archived", event.SenderID, group.ID, map[string]any{
 		"alias":                group.Alias,
 		"session_id":           config.ActiveSessionID(group),
 		"reason":               reason,

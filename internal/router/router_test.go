@@ -1801,10 +1801,10 @@ func TestRouterSetConfigUpdatesActiveFallbackSettings(t *testing.T) {
 	updated.Active.FallbackBatchLimit = 3
 	r.SetConfig(updated)
 
-	if delay := r.activeFallbackDelayValue(); delay != 7*time.Second {
+	if delay := r.activeFallbackDelayValue(r.cfg.Load()); delay != 7*time.Second {
 		t.Fatalf("active fallback delay = %s, want 7s", delay)
 	}
-	if limit := r.activeFallbackLimitValue(); limit != 3 {
+	if limit := r.activeFallbackLimitValue(r.cfg.Load()); limit != 3 {
 		t.Fatalf("active fallback limit = %d, want 3", limit)
 	}
 }
@@ -1813,6 +1813,36 @@ type blockingStopRunner struct {
 	stopStarted chan struct{}
 	releaseStop chan struct{}
 	stopOnce    sync.Once
+}
+
+type countingRunner struct {
+	mu      sync.Mutex
+	invokes int
+	stops   int
+}
+
+func (r *countingRunner) Invoke(context.Context, runner.Request) (runner.Result, error) {
+	r.mu.Lock()
+	r.invokes++
+	r.mu.Unlock()
+	return runner.Result{}, nil
+}
+
+func (r *countingRunner) Health(context.Context) error {
+	return nil
+}
+
+func (r *countingRunner) Stop(context.Context) error {
+	r.mu.Lock()
+	r.stops++
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *countingRunner) counts() (int, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.invokes, r.stops
 }
 
 func (r *blockingStopRunner) Invoke(context.Context, runner.Request) (runner.Result, error) {
@@ -1865,6 +1895,130 @@ func TestRouterSetConfigRetiresCachedRunnersWithoutBlocking(t *testing.T) {
 	defer cancel()
 	if err := r.Stop(stopCtx); err != nil {
 		t.Fatalf("router stop after runner retirement: %v", err)
+	}
+}
+
+func TestRouterSetConfigIsIgnoredAfterStop(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	r := New(cfg, nil, nil)
+	before := r.cfg.Load()
+	if err := r.Stop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	updated := cfg
+	updated.Active.AckMode = "verbose"
+	r.SetConfig(updated)
+	if after := r.cfg.Load(); after != before {
+		t.Fatal("SetConfig published a new generation after Router.Stop")
+	}
+}
+
+func TestRouterSetConfigAndWaitDrainsPreviousGeneration(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	r := New(cfg, nil, nil)
+	previous, releasePrevious := r.acquireConfigSnapshot()
+	if previous == nil {
+		t.Fatal("failed to acquire previous config generation")
+	}
+	updated := cfg
+	updated.Active.AckMode = "verbose"
+	completed := make(chan error, 1)
+	go func() {
+		completed <- r.SetConfigAndWait(t.Context(), updated)
+	}()
+	select {
+	case err := <-completed:
+		t.Fatalf("SetConfigAndWait returned before previous generation drained: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	releasePrevious()
+	select {
+	case err := <-completed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SetConfigAndWait did not finish after previous generation drained")
+	}
+	if r.cfg.Load() == previous {
+		t.Fatal("new config generation was not published")
+	}
+	if err := r.Stop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRouterRunnerForDoesNotCachePreviousConfigGeneration(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	r := New(cfg, nil, nil)
+	oldSnapshot := r.cfg.Load()
+	updated := cfg
+	updated.Active.AckMode = "verbose"
+	r.SetConfig(updated)
+	runnerCfg := config.RunnerConfig{
+		Mode:    "process-jsonl",
+		Command: os.Args[0],
+	}
+
+	stale := r.runnerFor(oldSnapshot, "chat@g.us", "persistent", runnerCfg)
+	if _, ok := stale.(*singleUseRunner); !ok {
+		t.Fatalf("stale generation runner type = %T, want *singleUseRunner", stale)
+	}
+	r.mu.Lock()
+	cachedAfterStale := len(r.runnerCache)
+	r.mu.Unlock()
+	if cachedAfterStale != 0 {
+		t.Fatalf("stale generation populated current runner cache: %d entries", cachedAfterStale)
+	}
+	if err := stale.Stop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	currentSnapshot := r.cfg.Load()
+	current := r.runnerFor(currentSnapshot, "chat@g.us", "persistent", runnerCfg)
+	if _, ok := current.(*singleUseRunner); ok {
+		t.Fatalf("current generation runner type = %T, want cached process runner", current)
+	}
+	r.mu.Lock()
+	cachedAfterCurrent := len(r.runnerCache)
+	r.mu.Unlock()
+	if cachedAfterCurrent != 1 {
+		t.Fatalf("current generation runner cache entries = %d, want 1", cachedAfterCurrent)
+	}
+	stopCtx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if err := r.Stop(stopCtx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestManagedPersistentRunnerCleansLateInvokeAfterRetirement(t *testing.T) {
+	t.Parallel()
+	primary := &countingRunner{}
+	replacement := &countingRunner{}
+	managed := &managedPersistentRunner{
+		inner:     primary,
+		newRunner: func() runner.Runner { return replacement },
+	}
+	// This models runnerFor returning the managed cache entry, followed by a
+	// config reload retiring it before the caller reaches Invoke.
+	if err := managed.Stop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := managed.Invoke(t.Context(), runner.Request{RequestID: "late"}); err != nil {
+		t.Fatal(err)
+	}
+	primaryInvokes, primaryStops := primary.counts()
+	replacementInvokes, replacementStops := replacement.counts()
+	if primaryInvokes != 0 || primaryStops != 1 {
+		t.Fatalf("primary counts invokes=%d stops=%d", primaryInvokes, primaryStops)
+	}
+	if replacementInvokes != 1 || replacementStops != 1 {
+		t.Fatalf("replacement counts invokes=%d stops=%d", replacementInvokes, replacementStops)
 	}
 }
 
