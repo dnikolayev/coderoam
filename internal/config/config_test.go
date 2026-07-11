@@ -238,6 +238,56 @@ func TestSaveRejectsStaleLoadedConfig(t *testing.T) {
 	}
 }
 
+func TestSaveRejectsConfigCreatedAfterLoadOrDefault(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	staleMissing, resolvedPath, err := LoadOrDefault(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolvedPath != path {
+		t.Fatalf("resolved path = %q, want %q", resolvedPath, path)
+	}
+	concurrent := Default()
+	concurrent.Active.AckMode = "verbose"
+	if err := Save(path, concurrent); err != nil {
+		t.Fatal(err)
+	}
+	staleMissing.Active.AckMode = "off"
+	if err := Save(path, staleMissing); !errors.Is(err, ErrConfigChanged) {
+		t.Fatalf("missing-snapshot Save error = %v, want ErrConfigChanged", err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Active.AckMode != "verbose" {
+		t.Fatalf("missing snapshot replaced concurrent config: ack_mode=%q", loaded.Active.AckMode)
+	}
+}
+
+func TestSaveIfMissingPreservesExistingConfig(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	existing := Default()
+	existing.Active.AckMode = "verbose"
+	if err := Save(path, existing); err != nil {
+		t.Fatal(err)
+	}
+	candidate := Default()
+	candidate.Active.AckMode = "off"
+	if err := SaveIfMissing(path, candidate); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Active.AckMode != "verbose" {
+		t.Fatalf("SaveIfMissing replaced existing config: ack_mode=%q", loaded.Active.AckMode)
+	}
+}
+
 func TestSaveNeverExposesPartialConfig(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")

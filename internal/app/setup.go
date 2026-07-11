@@ -138,23 +138,24 @@ func (s *cliState) runSetupWizard(cmd *cobra.Command, opts setupWizardOptions) e
 	if err != nil {
 		return err
 	}
-	if profile := strings.TrimSpace(opts.Profile); profile != "" {
-		cfg.App.Profile = profile
+	profileOverride := strings.TrimSpace(opts.Profile)
+	if profileOverride != "" {
+		cfg.App.Profile = profileOverride
+	}
+	if err := config.SaveIfMissing(path, cfg); err != nil {
+		return err
+	}
+	// Always continue from the exact on-disk revision. Another first-run
+	// process may have won creation while this wizard was starting.
+	cfg, err = config.Load(path)
+	if err != nil {
+		return err
+	}
+	if profileOverride != "" {
+		cfg.App.Profile = profileOverride
 	}
 	if err := config.EnsureProfileDirs(cfg.App.Profile); err != nil {
 		return err
-	}
-	if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
-		if err := config.Save(path, cfg); err != nil {
-			return err
-		}
-		// Load the just-created file so the final save is guarded by its exact
-		// revision. Setup can wait a long time for login or group creation; a
-		// zero-revision config would otherwise overwrite concurrent updates.
-		cfg, err = config.Load(path)
-		if err != nil {
-			return err
-		}
 	}
 
 	workdir := strings.TrimSpace(opts.Workdir)
