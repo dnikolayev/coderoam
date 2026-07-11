@@ -25,6 +25,12 @@ protocols.
   a config reload instead of invoking a captured stale binding.
 - Persistent runner cache entries are scoped to their config snapshot and are
   retired asynchronously, preventing stale session reuse and long reload stalls.
+- Reload publication now drains the previous routing generation and performs a
+  final inbox reconciliation, preventing a late old-session write from being
+  stranded after a group or session rebind.
+- Config saves now use a cross-process mutation lock, stale-revision rejection,
+  and atomic synced replacement so CLI changes and daemon lifecycle archives do
+  not silently overwrite each other or expose partial TOML to the live reloader.
 - Active group re-enablement now defaults the session id to its lane alias and
   clears a pinned runner when its session no longer matches, keeping parallel
   MRF lanes isolated.

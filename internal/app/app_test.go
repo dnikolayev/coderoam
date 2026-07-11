@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -410,6 +411,61 @@ func TestSetupWizardConfiguresActiveSessionWithConfirmedAuthorizedNumber(t *test
 	}
 	if len(ft.Sent) != 1 || ft.Sent[0].ChatID != "+15550001111" {
 		t.Fatalf("invite sends = %+v", ft.Sent)
+	}
+}
+
+type setupCreateGroupHookTransport struct {
+	transport.ChatTransport
+	hook func() error
+}
+
+func (t *setupCreateGroupHookTransport) CreateGroup(ctx context.Context, name string, participants []string) (*types.Chat, error) {
+	if err := t.hook(); err != nil {
+		return nil, err
+	}
+	return t.ChatTransport.CreateGroup(ctx, name, participants)
+}
+
+func TestSetupWizardRejectsConcurrentUpdateAfterCreatingConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path := filepath.Join(t.TempDir(), "config.toml")
+	baseTransport := fake.New(nil)
+	hookedTransport := &setupCreateGroupHookTransport{
+		ChatTransport: baseTransport,
+		hook: func() error {
+			concurrent, err := config.Load(path)
+			if err != nil {
+				return err
+			}
+			concurrent.App.LogLevel = "debug"
+			return config.Save(path, concurrent)
+		},
+	}
+	state := &cliState{
+		configPath: path,
+		transportFactory: func(context.Context, config.Config) (transport.ChatTransport, error) {
+			return hookedTransport, nil
+		},
+	}
+	cmd := state.setupCommand()
+	cmd.SetArgs([]string{
+		"--yes",
+		"--agent", "codex",
+		"--authorized", "+1 (555) 000-1111",
+		"--group-name", "Coderoam Test",
+		"--workdir", t.TempDir(),
+		"--session-id", "codex-session",
+	})
+	_, err := captureStdout(t, cmd.Execute)
+	if !errors.Is(err, config.ErrConfigChanged) {
+		t.Fatalf("setup error = %v, want stale config rejection", err)
+	}
+	loaded, loadErr := config.Load(path)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if loaded.App.LogLevel != "debug" {
+		t.Fatalf("concurrent update was overwritten: log_level=%q", loaded.App.LogLevel)
 	}
 }
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,5 +204,128 @@ func TestSaveRejectsDuplicateActiveSessionBindings(t *testing.T) {
 	err := Save(filepath.Join(t.TempDir(), "config.toml"), cfg)
 	if err == nil || !strings.Contains(err.Error(), "active session id codex-session is configured for multiple chats") {
 		t.Fatalf("error = %v, want duplicate session save guard", err)
+	}
+}
+
+func TestSaveRejectsStaleLoadedConfig(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := Save(path, Default()); err != nil {
+		t.Fatal(err)
+	}
+	first, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Active.AckMode = "verbose"
+	if err := Save(path, first); err != nil {
+		t.Fatal(err)
+	}
+	stale.Active.AckMode = "off"
+	if err := Save(path, stale); !errors.Is(err, ErrConfigChanged) {
+		t.Fatalf("stale Save error = %v, want ErrConfigChanged", err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Active.AckMode != "verbose" {
+		t.Fatalf("stale save replaced newer config: ack_mode=%q", loaded.Active.AckMode)
+	}
+}
+
+func TestSaveRejectsConfigCreatedAfterLoadOrDefault(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	staleMissing, resolvedPath, err := LoadOrDefault(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolvedPath != path {
+		t.Fatalf("resolved path = %q, want %q", resolvedPath, path)
+	}
+	concurrent := Default()
+	concurrent.Active.AckMode = "verbose"
+	if err := Save(path, concurrent); err != nil {
+		t.Fatal(err)
+	}
+	staleMissing.Active.AckMode = "off"
+	if err := Save(path, staleMissing); !errors.Is(err, ErrConfigChanged) {
+		t.Fatalf("missing-snapshot Save error = %v, want ErrConfigChanged", err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Active.AckMode != "verbose" {
+		t.Fatalf("missing snapshot replaced concurrent config: ack_mode=%q", loaded.Active.AckMode)
+	}
+}
+
+func TestSaveIfMissingPreservesExistingConfig(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	existing := Default()
+	existing.Active.AckMode = "verbose"
+	if err := Save(path, existing); err != nil {
+		t.Fatal(err)
+	}
+	candidate := Default()
+	candidate.Active.AckMode = "off"
+	if err := SaveIfMissing(path, candidate); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Active.AckMode != "verbose" {
+		t.Fatalf("SaveIfMissing replaced existing config: ack_mode=%q", loaded.Active.AckMode)
+	}
+}
+
+func TestSaveNeverExposesPartialConfig(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := Save(path, Default()); err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	readerDone := make(chan error, 1)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				readerDone <- nil
+				return
+			default:
+			}
+			if _, err := Load(path); err != nil {
+				readerDone <- err
+				return
+			}
+		}
+	}()
+	for i := 0; i < 50; i++ {
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i%2 == 0 {
+			cfg.Active.AckMode = "verbose"
+		} else {
+			cfg.Active.AckMode = "off"
+		}
+		if err := Save(path, cfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	if err := <-readerDone; err != nil {
+		t.Fatalf("concurrent config read observed partial write: %v", err)
 	}
 }

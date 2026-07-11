@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -20,19 +21,24 @@ const (
 )
 
 type Config struct {
-	App         AppConfig               `toml:"app"`
-	Transport   TransportConfig         `toml:"transport"`
-	Trigger     TriggerConfig           `toml:"trigger"`
-	Active      ActiveConfig            `toml:"active"`
-	Security    SecurityConfig          `toml:"security"`
-	RateLimits  RateLimitConfig         `toml:"rate_limits"`
-	Reply       ReplyConfig             `toml:"reply"`
-	Session     SessionConfig           `toml:"session"`
-	Retention   RetentionConfig         `toml:"retention"`
-	Concurrency ConcurrencyConfig       `toml:"concurrency"`
-	Runner      map[string]RunnerConfig `toml:"runner"`
-	Groups      []GroupConfig           `toml:"groups"`
+	App            AppConfig               `toml:"app"`
+	Transport      TransportConfig         `toml:"transport"`
+	Trigger        TriggerConfig           `toml:"trigger"`
+	Active         ActiveConfig            `toml:"active"`
+	Security       SecurityConfig          `toml:"security"`
+	RateLimits     RateLimitConfig         `toml:"rate_limits"`
+	Reply          ReplyConfig             `toml:"reply"`
+	Session        SessionConfig           `toml:"session"`
+	Retention      RetentionConfig         `toml:"retention"`
+	Concurrency    ConcurrencyConfig       `toml:"concurrency"`
+	Runner         map[string]RunnerConfig `toml:"runner"`
+	Groups         []GroupConfig           `toml:"groups"`
+	sourcePath     string
+	sourceRevision [sha256.Size]byte
+	sourceMissing  bool
 }
+
+var ErrConfigChanged = errors.New("config changed since it was loaded")
 
 type AppConfig struct {
 	Profile      string `toml:"profile"`
@@ -235,6 +241,8 @@ func Load(path string) (Config, error) {
 	if err := ValidateActiveSessionBindings(cfg); err != nil {
 		return Config{}, err
 	}
+	cfg.sourcePath = filepath.Clean(path)
+	cfg.sourceRevision = sha256.Sum256(data)
 	return cfg, nil
 }
 
@@ -248,6 +256,8 @@ func LoadOrDefault(path string) (Config, string, error) {
 	}
 	if errors.Is(err, os.ErrNotExist) {
 		cfg := Default()
+		cfg.sourcePath = filepath.Clean(path)
+		cfg.sourceMissing = true
 		return cfg, path, nil
 	}
 	return Config{}, path, err
@@ -268,7 +278,57 @@ func Save(path string, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	return saveConfigFile(path, data, cfg)
+}
+
+// SaveIfMissing atomically creates a config for first-run workflows without
+// replacing a file another coderoam process created first.
+func SaveIfMissing(path string, cfg Config) error {
+	if path == "" {
+		path = DefaultConfigPath()
+	}
+	ApplyDefaults(&cfg)
+	if err := ValidateActiveSessionBindings(cfg); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	data, err := toml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	return withConfigMutationLock(path, func() error {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return atomicWriteConfig(path, data)
+	})
+}
+
+func saveConfigFile(path string, data []byte, cfg Config) error {
+	return withConfigMutationLock(path, func() error {
+		if cfg.sourcePath == filepath.Clean(path) {
+			if cfg.sourceMissing {
+				if _, err := os.Stat(path); err == nil {
+					return fmt.Errorf("%w at %s; reload and retry", ErrConfigChanged, path)
+				} else if !errors.Is(err, os.ErrNotExist) {
+					return err
+				}
+			} else if cfg.sourceRevision != ([sha256.Size]byte{}) {
+				current, err := os.ReadFile(path)
+				if err != nil {
+					return err
+				}
+				if sha256.Sum256(current) != cfg.sourceRevision {
+					return fmt.Errorf("%w at %s; reload and retry", ErrConfigChanged, path)
+				}
+			}
+		}
+		return atomicWriteConfig(path, data)
+	})
 }
 
 func ApplyDefaults(cfg *Config) {
