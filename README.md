@@ -356,6 +356,13 @@ that consumer continuously reads stdout. Use `--format jsonl` for
 machine-readable local agent integrations. Media-only messages are queued with
 local metadata/captions rather than downloaded by default.
 
+The daemon reloads validated config changes before routing incoming messages
+and polls for changes once per second. This makes `active start`, `active
+enable`, group runner changes, and allowlist updates effective without dropping
+and relinking the WhatsApp connection. A malformed edit keeps the current
+usable snapshot. Changes to the app profile, database/transport identity, or
+daemon concurrency still require a daemon restart and are reported as such.
+
 When no live watcher is connected and the active-session group has a safe
 fallback runner, the bridge waits briefly for related WhatsApp messages and
 sends them to the runner as one combined turn. Configure this behavior with:
@@ -791,7 +798,7 @@ and `coderoam logs tail` are the first diagnostics to run. See
 
 ## Status
 
-Current implementation: v0.1.19 active-session queue repair.
+Current implementation: v0.1.20 live active-session config reload.
 
 Project maturity: early MVP. The public API, config shape, database schema, and
 runner protocol can still change before v1.0.

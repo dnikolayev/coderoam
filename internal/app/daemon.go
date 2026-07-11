@@ -6,7 +6,9 @@ import (
 	"maps"
 	"os"
 	"os/signal"
+	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -77,11 +79,21 @@ func (s *cliState) runCommand() *cobra.Command {
 			// load once per pass. Sharing the local cfg variable directly would
 			// tear concurrent reads of the large config.Config struct.
 			liveCfg := newRunConfigHolder(cfg)
+			configManager := newRunConfigManager(path, profile, liveCfg, bridgeRouter, store, chatTransport, func(format string, args ...any) {
+				fmt.Printf(format, args...)
+			})
+			configAwareRouter := &runConfigRefreshingHandler{
+				manager: configManager,
+				next:    bridgeRouter,
+				logf: func(format string, args ...any) {
+					fmt.Printf(format, args...)
+				},
+			}
 			var workers sync.WaitGroup
 			workers.Add(1)
 			go func() {
 				defer workers.Done()
-				dispatcher := newRunMessageDispatcher(ctx, bridgeRouter, cfg, func(format string, args ...any) {
+				dispatcher := newRunMessageDispatcher(ctx, configAwareRouter, cfg, func(format string, args ...any) {
 					fmt.Printf(format, args...)
 				})
 				defer dispatcher.Stop()
@@ -102,14 +114,12 @@ func (s *cliState) runCommand() *cobra.Command {
 					case <-ctx.Done():
 						return
 					case event := <-groupEvents:
-						updated, archived, err := handleRelayGroupLifecycleEvent(ctx, liveCfg.Load(), path, store, chatTransport, event)
+						archived, err := configManager.HandleRelayGroupLifecycleEvent(ctx, event)
 						if err != nil {
 							fmt.Printf("[group-event] chat=%s error=%s\n", logging.Redact(event.ChatID), err)
 							continue
 						}
 						if archived {
-							liveCfg.Store(updated)
-							bridgeRouter.SetConfig(updated)
 							fmt.Printf("[group-event] chat=%s archived=true\n", logging.Redact(event.ChatID))
 						}
 					}
@@ -168,6 +178,9 @@ func (s *cliState) runCommand() *cobra.Command {
 			if err := chatTransport.Connect(ctx); err != nil {
 				return err
 			}
+			if _, err := configManager.Refresh(ctx); err != nil {
+				fmt.Printf("[config] reload/reconcile error=%s; retaining current usable config\n", err)
+			}
 			workers.Add(1)
 			go func() {
 				defer workers.Done()
@@ -225,6 +238,13 @@ func (s *cliState) runCommand() *cobra.Command {
 					fmt.Printf("[ignored] chat=%s reason=pending queue full\n", logging.Redact(msg.ChatID))
 				}
 			}
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				runConfigReloadLoop(ctx, configManager, time.Second, func(format string, args ...any) {
+					fmt.Printf(format, args...)
+				})
+			}()
 			fmt.Println("[ready] press Ctrl-C to stop")
 			<-ctx.Done()
 			fmt.Println("[shutdown] stopping bridge")
@@ -283,6 +303,215 @@ func cloneRunConfig(cfg config.Config) config.Config {
 
 type runIncomingHandler interface {
 	Handle(context.Context, types.IncomingMessage) router.ProcessResult
+}
+
+type runConfigTarget interface {
+	SetConfig(config.Config)
+	ScheduleUnreadActiveFallbacks(context.Context, *config.Config, int) (int, error)
+}
+
+type runConfigManager struct {
+	mu               sync.Mutex
+	path             string
+	profileOverride  string
+	holder           *runConfigHolder
+	target           runConfigTarget
+	store            *db.Store
+	transport        transport.ChatTransport
+	logf             func(string, ...any)
+	reconcilePending bool
+	pendingLifecycle []types.GroupEvent
+}
+
+type runConfigRefreshingHandler struct {
+	manager *runConfigManager
+	next    runIncomingHandler
+	logf    func(string, ...any)
+}
+
+func newRunConfigManager(path string, profileOverride string, holder *runConfigHolder, target runConfigTarget, store *db.Store, chatTransport transport.ChatTransport, logf func(string, ...any)) *runConfigManager {
+	return &runConfigManager{
+		path:            path,
+		profileOverride: strings.TrimSpace(profileOverride),
+		holder:          holder,
+		target:          target,
+		store:           store,
+		transport:       chatTransport,
+		logf:            logf,
+	}
+}
+
+func (m *runConfigManager) Refresh(ctx context.Context) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	changed, err := m.refreshLocked(ctx)
+	if err != nil {
+		return changed, err
+	}
+	if err := m.retryPendingLifecycleLocked(ctx); err != nil {
+		return changed, err
+	}
+	return changed, nil
+}
+
+func (m *runConfigManager) refreshLocked(ctx context.Context) (bool, error) {
+	updated, err := config.Load(m.path)
+	if err != nil {
+		return false, err
+	}
+	if m.profileOverride != "" {
+		updated.App.Profile = m.profileOverride
+	}
+	current := m.holder.Load()
+	changed := !reflect.DeepEqual(current, updated)
+	if !changed && !m.reconcilePending {
+		return false, nil
+	}
+	if changed {
+		if err := validateRunConfigReload(current, updated); err != nil {
+			return false, err
+		}
+	}
+
+	migrated, repaired, err := reconcileRunConfigBindings(ctx, m.store, updated)
+	if err != nil {
+		return false, err
+	}
+	if changed {
+		m.holder.Store(updated)
+		m.target.SetConfig(updated)
+	}
+	m.reconcilePending = true
+	rescheduled, err := m.target.ScheduleUnreadActiveFallbacks(ctx, &updated, 100)
+	if err != nil {
+		return changed, err
+	}
+	m.reconcilePending = false
+	if m.logf != nil {
+		action := "reconciled"
+		if changed {
+			action = "reloaded"
+		}
+		m.logf("[config] %s groups=%d migrated=%d repaired=%d fallback_rescheduled=%d\n", action, len(enabledGroups(updated.Groups)), migrated, repaired, rescheduled)
+	}
+	return changed, nil
+}
+
+func reconcileRunConfigBindings(ctx context.Context, store *db.Store, cfg config.Config) (int, int, error) {
+	migrated := 0
+	for _, group := range enabledGroups(cfg.Groups) {
+		if group.Mode != config.GroupModeActiveSession {
+			continue
+		}
+		count, err := store.MigrateMessagesToActiveInbox(ctx, cfg.App.Profile, group.ID, group.Alias, config.ActiveSessionID(group))
+		if err != nil {
+			return 0, 0, err
+		}
+		migrated += count
+	}
+	repaired, err := repairActiveInboxForConfig(ctx, store, cfg)
+	return migrated, repaired, err
+}
+
+func (m *runConfigManager) HandleRelayGroupLifecycleEvent(ctx context.Context, event types.GroupEvent) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, err := m.refreshLocked(ctx); err != nil {
+		m.queueLifecycleEventLocked(event)
+		return false, fmt.Errorf("refresh config before group lifecycle event; event queued for retry: %w", err)
+	}
+	if err := m.retryPendingLifecycleLocked(ctx); err != nil {
+		m.queueLifecycleEventLocked(event)
+		return false, err
+	}
+	archived, err := m.applyLifecycleEventLocked(ctx, event)
+	if err != nil {
+		m.queueLifecycleEventLocked(event)
+	}
+	return archived, err
+}
+
+func (m *runConfigManager) applyLifecycleEventLocked(ctx context.Context, event types.GroupEvent) (bool, error) {
+	updated, archived, err := handleRelayGroupLifecycleEvent(ctx, m.holder.Load(), m.path, m.store, m.transport, event)
+	if err != nil || !archived {
+		return archived, err
+	}
+	m.holder.Store(updated)
+	m.target.SetConfig(updated)
+	return true, nil
+}
+
+func (m *runConfigManager) queueLifecycleEventLocked(event types.GroupEvent) {
+	for _, pending := range m.pendingLifecycle {
+		if pending.ChatID == event.ChatID {
+			return
+		}
+	}
+	m.pendingLifecycle = append(m.pendingLifecycle, event)
+}
+
+func (m *runConfigManager) retryPendingLifecycleLocked(ctx context.Context) error {
+	for len(m.pendingLifecycle) > 0 {
+		event := m.pendingLifecycle[0]
+		archived, err := m.applyLifecycleEventLocked(ctx, event)
+		if err != nil {
+			return fmt.Errorf("retry queued group lifecycle event: %w", err)
+		}
+		m.pendingLifecycle = m.pendingLifecycle[1:]
+		if archived && m.logf != nil {
+			m.logf("[group-event] chat=%s archived=true reason=queued-retry\n", logging.Redact(event.ChatID))
+		}
+	}
+	return nil
+}
+
+func validateRunConfigReload(current config.Config, updated config.Config) error {
+	if current.App != updated.App {
+		return fmt.Errorf("app settings changed; restart coderoam to apply them")
+	}
+	if current.Transport != updated.Transport {
+		return fmt.Errorf("transport settings changed; restart coderoam to apply them")
+	}
+	if current.Concurrency != updated.Concurrency || current.RateLimits.MaxParallelGroups != updated.RateLimits.MaxParallelGroups {
+		return fmt.Errorf("daemon concurrency settings changed; restart coderoam to apply them")
+	}
+	return nil
+}
+
+func (h *runConfigRefreshingHandler) Handle(ctx context.Context, msg types.IncomingMessage) router.ProcessResult {
+	if _, err := h.manager.Refresh(ctx); err != nil && h.logf != nil {
+		h.logf("[config] reload/reconcile error=%s; retaining current usable config\n", err)
+	}
+	return h.next.Handle(ctx, msg)
+}
+
+func runConfigReloadLoop(ctx context.Context, manager *runConfigManager, interval time.Duration, logf func(string, ...any)) {
+	if interval <= 0 {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	lastError := ""
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_, err := manager.Refresh(ctx)
+			if err == nil {
+				if lastError != "" && logf != nil {
+					logf("[config] reload recovered\n")
+				}
+				lastError = ""
+				continue
+			}
+			if err.Error() != lastError && logf != nil {
+				logf("[config] reload/reconcile error=%s; retaining current usable config\n", err)
+			}
+			lastError = err.Error()
+		}
+	}
 }
 
 type runMessageDispatcher struct {
