@@ -6,6 +6,34 @@ protocols.
 
 ## Unreleased
 
+## v0.1.20 - 2026-07-11
+
+### Added
+
+- The running daemon now reloads validated config changes before routing each
+  message and on a one-second poll, so newly enabled active-session groups and
+  pinned runners take effect without restarting the WhatsApp connection.
+- Config reload reconciles active-inbox session bindings and reschedules unread
+  pinned fallbacks. Invalid or restart-only changes retain the current usable
+  runtime config, and relay group lifecycle events wait for a safe retry.
+
+### Fixed
+
+- Prevented groups added after daemon startup from being rejected by a stale
+  in-memory allowlist while their outbound active-session updates still sent.
+- Scheduled fallbacks now re-check the current group, session, and runner after
+  a config reload instead of invoking a captured stale binding.
+- Persistent runner cache entries are scoped to their config snapshot and are
+  retired asynchronously, preventing stale session reuse and long reload stalls.
+- Active group re-enablement now defaults the session id to its lane alias and
+  clears a pinned runner when its session no longer matches, keeping parallel
+  MRF lanes isolated.
+
+### Tests
+
+- Added reload, last-known-good, lifecycle retry, profile override, inbox
+  reconciliation, fallback rebind, and non-blocking runner-retirement coverage.
+
 ## v0.1.19 - 2026-06-19
 
 ### Fixed

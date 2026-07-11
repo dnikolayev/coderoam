@@ -39,6 +39,7 @@ type Router struct {
 	stopped    chan struct{}
 	stopOnce   sync.Once
 	fallbackWG sync.WaitGroup
+	retiredWG  sync.WaitGroup
 }
 
 type ProcessResult struct {
@@ -90,14 +91,15 @@ func snapshotConfig(cfg config.Config) *config.Config {
 }
 
 func (r *Router) SetConfig(cfg config.Config) {
+	config.ApplyDefaults(&cfg)
 	r.cfg.Store(snapshotConfig(cfg))
 	r.mu.Lock()
 	cached := r.runnerCache
 	r.runnerCache = map[string]runner.Runner{}
+	r.activeFallbackDelay = time.Duration(cfg.Active.FallbackDelaySeconds) * time.Second
+	r.activeFallbackLimit = cfg.Active.FallbackBatchLimit
 	r.mu.Unlock()
-	if err := stopRunners(context.Background(), cached); err != nil {
-		fmt.Fprintf(os.Stderr, "stopping old runners after config reload: %v\n", err)
-	}
+	r.retireRunners(cached)
 }
 
 // Stop shuts the router down: it signals scheduled fallback goroutines to
@@ -114,6 +116,7 @@ func (r *Router) Stop(ctx context.Context) error {
 	drained := make(chan struct{})
 	go func() {
 		r.fallbackWG.Wait()
+		r.retiredWG.Wait()
 		close(drained)
 	}()
 	select {
@@ -124,6 +127,19 @@ func (r *Router) Stop(ctx context.Context) error {
 		}
 	}
 	return err
+}
+
+func (r *Router) retireRunners(cached map[string]runner.Runner) {
+	if len(cached) == 0 {
+		return
+	}
+	r.retiredWG.Add(1)
+	go func() {
+		defer r.retiredWG.Done()
+		if err := stopRunners(context.Background(), cached); err != nil {
+			fmt.Fprintf(os.Stderr, "stopping old runners after config reload: %v\n", err)
+		}
+	}()
 }
 
 func (r *Router) Handle(ctx context.Context, msg types.IncomingMessage) ProcessResult {
@@ -238,7 +254,7 @@ func (r *Router) process(ctx context.Context, cfg *config.Config, msg types.Inco
 		if _, connected, err := r.store.ActiveWatcherFresh(ctx, cfg.App.Profile, sessionID, activeWatcherStaleAfter); err != nil {
 			return ProcessResult{}, err
 		} else if !connected && activeSessionFallbackAllowed(cfg, group) {
-			if r.activeFallbackDelay <= 0 {
+			if r.activeFallbackDelayValue() <= 0 {
 				return r.processActiveSessionFallback(ctx, cfg, msg, group, sessionID)
 			}
 			scheduled := r.scheduleActiveSessionFallback(cfg, msg, group, sessionID)
@@ -404,12 +420,12 @@ func (r *Router) invokeRunnerAndSend(ctx context.Context, cfg *config.Config, ms
 }
 
 func (r *Router) scheduleActiveSessionFallback(cfg *config.Config, msg types.IncomingMessage, group config.GroupConfig, sessionID string) bool {
+	key := activeFallbackScheduleKey(cfg.App.Profile, msg.ChatID, sessionID)
+	r.mu.Lock()
 	delay := r.activeFallbackDelay
 	if delay < 0 {
 		delay = 0
 	}
-	key := activeFallbackScheduleKey(cfg.App.Profile, msg.ChatID, sessionID)
-	r.mu.Lock()
 	if r.activeFallbackScheduled == nil {
 		r.activeFallbackScheduled = map[string]bool{}
 	}
@@ -467,15 +483,25 @@ func (r *Router) scheduleActiveSessionFallback(cfg *config.Config, msg types.Inc
 			// reloaded while this goroutine waited on its timer.
 			fireCfg := r.cfg.Load()
 			if fireCfg == nil {
+				cancel()
+				lock.Unlock()
 				return
 			}
-			result, err := r.processActiveSessionFallback(ctx, fireCfg, msg, group, sessionID)
+			fireGroup, configured := config.FindGroup(*fireCfg, msg.ChatID)
+			if !configured || fireGroup.Mode != config.GroupModeActiveSession || config.ActiveSessionID(fireGroup) != sessionID || !activeSessionFallbackAllowed(fireCfg, fireGroup) {
+				result := ProcessResult{Ignored: true, Reason: "active inbox fallback canceled after config reload"}
+				cancel()
+				lock.Unlock()
+				r.auditRoute(context.Background(), fireCfg, msg, group, result, map[string]any{"async_fallback": true})
+				return
+			}
+			result, err := r.processActiveSessionFallback(ctx, fireCfg, msg, fireGroup, sessionID)
 			cancel()
 			lock.Unlock()
 			if err != nil {
 				result = ProcessResult{Ignored: true, Reason: err.Error()}
 			}
-			r.auditRoute(context.Background(), fireCfg, msg, group, result, map[string]any{"async_fallback": true})
+			r.auditRoute(context.Background(), fireCfg, msg, fireGroup, result, map[string]any{"async_fallback": true})
 			if err != nil || result.Ignored || result.Reason == "active inbox fallback skipped because watcher connected" {
 				return
 			}
@@ -507,7 +533,7 @@ func (r *Router) processActiveSessionFallback(ctx context.Context, cfg *config.C
 	} else if connected {
 		return ProcessResult{Reason: "active inbox fallback skipped because watcher connected"}, nil
 	}
-	claimed, err := r.store.ClaimActiveInboxBatchForSession(ctx, cfg.App.Profile, msg.ChatID, sessionID, r.activeFallbackLimit)
+	claimed, err := r.store.ClaimActiveInboxBatchForSession(ctx, cfg.App.Profile, msg.ChatID, sessionID, r.activeFallbackLimitValue())
 	if err != nil {
 		return ProcessResult{}, err
 	}
@@ -532,6 +558,18 @@ func (r *Router) processActiveSessionFallback(ctx context.Context, cfg *config.C
 		result.Reason = "active inbox fallback runner processed"
 	}
 	return result, nil
+}
+
+func (r *Router) activeFallbackDelayValue() time.Duration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.activeFallbackDelay
+}
+
+func (r *Router) activeFallbackLimitValue() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.activeFallbackLimit
 }
 
 func (r *Router) ScheduleUnreadActiveFallbacks(ctx context.Context, cfg *config.Config, limit int) (int, error) {
@@ -677,7 +715,11 @@ func (r *Router) runnerFor(cfg *config.Config, chatID, runnerID string, runnerCf
 	if runnerCfg.Mode != "process-jsonl" {
 		return runner.NewProcessRunner(runnerCfg, cfg.RateLimits.MaxRunnerSeconds)
 	}
-	key := strings.Join([]string{cfg.App.Profile, chatID, runnerID}, "\x00")
+	// Include the immutable config snapshot identity. A Handle call that loaded
+	// the previous snapshot can race SetConfig and insert its old persistent
+	// runner after the cache was cleared; the snapshot-specific key prevents a
+	// later turn from reusing stale runner arguments or session environment.
+	key := strings.Join([]string{cfg.App.Profile, chatID, runnerID, fmt.Sprintf("%p", cfg)}, "\x00")
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.runnerCache == nil {

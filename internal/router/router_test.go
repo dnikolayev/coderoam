@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -727,6 +728,76 @@ func TestRouterStopDrainsScheduledFallbackWithoutProcessing(t *testing.T) {
 	// A second Stop must stay safe and idempotent.
 	if err := r.Stop(stopCtx); err != nil {
 		t.Fatalf("second Stop: %v", err)
+	}
+}
+
+func TestRouterScheduledFallbackHonorsReloadedGroupConfig(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.App.Profile = "test"
+	cfg.App.DatabasePath = filepath.Join(t.TempDir(), "bridge.sqlite3")
+	cfg.Runner["codex-session"] = config.RunnerConfig{
+		Mode:    "process-once-json",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestRouterHelperProcess", "--", "json"},
+		Env: map[string]string{
+			"GO_WANT_ROUTER_HELPER_PROCESS": "1",
+			"CODEX_RUNNER_SESSION_ID":       "codex-session",
+		},
+	}
+	cfg.Groups = []config.GroupConfig{{
+		ID:              "1203630active@g.us",
+		Alias:           "codex-session",
+		Runner:          "codex-session",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "codex-session",
+		Enabled:         true,
+	}}
+	store, err := db.Open(cfg.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ft := fake.New(nil)
+	r := New(cfg, store, ft)
+	defer func() {
+		if err := r.Stop(t.Context()); err != nil {
+			t.Errorf("router stop: %v", err)
+		}
+	}()
+	r.activeFallbackDelay = 200 * time.Millisecond
+
+	result := r.Handle(t.Context(), types.IncomingMessage{
+		ID:        "msg-config-reload",
+		ChatID:    "1203630active@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "owner@lid",
+		Text:      "do not run after reload",
+		RawText:   "do not run after reload",
+		Timestamp: time.Now(),
+	})
+	if result.Ignored || result.Reason != "active inbox fallback scheduled" {
+		t.Fatalf("schedule result = %+v", result)
+	}
+	updated := cfg
+	updated.Groups = slices.Clone(cfg.Groups)
+	updated.Groups[0].Runner = ""
+	r.SetConfig(updated)
+
+	waitForRouterCondition(t, 5*time.Second, func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return len(r.activeFallbackScheduled) == 0
+	})
+	if sent := ft.SentSnapshot(); len(sent) != 0 {
+		t.Fatalf("fallback used stale runner after config reload: %+v", sent)
+	}
+	unread, err := store.ListActiveInbox(t.Context(), "test", "unread", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unread) != 1 || unread[0].ExternalMessageID != "msg-config-reload" {
+		t.Fatalf("unread rows after config reload = %+v", unread)
 	}
 }
 
@@ -1716,6 +1787,84 @@ func TestRouterSetConfigDoesNotRaceWithHandle(t *testing.T) {
 	wg.Wait()
 	if len(ft.Sent) != messages {
 		t.Fatalf("sent count = %d, want %d", len(ft.Sent), messages)
+	}
+}
+
+func TestRouterSetConfigUpdatesActiveFallbackSettings(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	r := New(cfg, nil, nil)
+	defer r.Stop(context.Background())
+
+	updated := cfg
+	updated.Active.FallbackDelaySeconds = 7
+	updated.Active.FallbackBatchLimit = 3
+	r.SetConfig(updated)
+
+	if delay := r.activeFallbackDelayValue(); delay != 7*time.Second {
+		t.Fatalf("active fallback delay = %s, want 7s", delay)
+	}
+	if limit := r.activeFallbackLimitValue(); limit != 3 {
+		t.Fatalf("active fallback limit = %d, want 3", limit)
+	}
+}
+
+type blockingStopRunner struct {
+	stopStarted chan struct{}
+	releaseStop chan struct{}
+	stopOnce    sync.Once
+}
+
+func (r *blockingStopRunner) Invoke(context.Context, runner.Request) (runner.Result, error) {
+	return runner.Result{}, nil
+}
+
+func (r *blockingStopRunner) Health(context.Context) error {
+	return nil
+}
+
+func (r *blockingStopRunner) Stop(ctx context.Context) error {
+	r.stopOnce.Do(func() { close(r.stopStarted) })
+	select {
+	case <-r.releaseStop:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestRouterSetConfigRetiresCachedRunnersWithoutBlocking(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	r := New(cfg, nil, nil)
+	blocking := &blockingStopRunner{
+		stopStarted: make(chan struct{}),
+		releaseStop: make(chan struct{}),
+	}
+	r.mu.Lock()
+	r.runnerCache["old-config-runner"] = blocking
+	r.mu.Unlock()
+
+	returned := make(chan struct{})
+	go func() {
+		r.SetConfig(cfg)
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("SetConfig blocked while retiring a cached runner")
+	}
+	select {
+	case <-blocking.stopStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cached runner retirement did not start")
+	}
+	close(blocking.releaseStop)
+	stopCtx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if err := r.Stop(stopCtx); err != nil {
+		t.Fatalf("router stop after runner retirement: %v", err)
 	}
 }
 

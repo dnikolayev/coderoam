@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -207,6 +208,429 @@ func TestRunConfigHolderZeroValueLoad(t *testing.T) {
 	got := holder.Load()
 	if got.App.Profile != "" || len(got.Groups) != 0 || len(got.Runner) != 0 || len(got.Security.AdminSenderIDs) != 0 || len(got.Security.AllowedSenderIDs) != 0 {
 		t.Fatalf("zero-value holder load = %+v", got)
+	}
+}
+
+func TestRunConfigRefreshingHandlerAcceptsGroupAddedAfterDaemonStart(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	initial := config.Default()
+	initial.App.Profile = "test"
+	initial.App.DatabasePath = filepath.Join(dir, "coderoam.sqlite3")
+	initial.Transport.Type = "fake"
+	initial.Security.RequireGroupAllowlist = true
+	if err := config.Save(path, initial); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := db.Open(initial.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureProfile(ctx, initial.App.Profile); err != nil {
+		t.Fatal(err)
+	}
+	bridgeRouter := router.New(initial, store, nil)
+	defer bridgeRouter.Stop(context.Background())
+	holder := newRunConfigHolder(initial)
+	manager := newRunConfigManager(path, "", holder, bridgeRouter, store, nil, nil)
+	handler := &runConfigRefreshingHandler{manager: manager, next: bridgeRouter}
+
+	updated := initial
+	updated.Groups = []config.GroupConfig{{
+		ID:              "mrf-1@g.us",
+		Alias:           "mrf-1",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "mrf-1",
+		Enabled:         true,
+		RelayManaged:    true,
+	}}
+	if err := config.Save(path, updated); err != nil {
+		t.Fatal(err)
+	}
+
+	result := handler.Handle(ctx, types.IncomingMessage{
+		ID:        "new-group-message",
+		ChatID:    "mrf-1@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "owner@lid",
+		Text:      "status?",
+		Timestamp: time.Now(),
+	})
+	if result.Ignored {
+		t.Fatalf("message from newly configured group was ignored: %+v", result)
+	}
+	records, err := store.ListActiveInbox(ctx, initial.App.Profile, "unread", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].SessionID != "mrf-1" || records[0].ExternalMessageID != "new-group-message" {
+		t.Fatalf("active inbox records = %+v", records)
+	}
+	if loaded := holder.Load(); len(loaded.Groups) != 1 || loaded.Groups[0].Alias != "mrf-1" {
+		t.Fatalf("live config was not reloaded: %+v", loaded.Groups)
+	}
+}
+
+func TestRunConfigRefreshingHandlerKeepsLastKnownGoodConfig(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	initial := config.Default()
+	initial.App.Profile = "test"
+	initial.App.DatabasePath = filepath.Join(dir, "coderoam.sqlite3")
+	initial.Transport.Type = "fake"
+	initial.Security.RequireGroupAllowlist = true
+	initial.Groups = []config.GroupConfig{{
+		ID:              "mrf-1@g.us",
+		Alias:           "mrf-1",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "mrf-1",
+		Enabled:         true,
+	}}
+	if err := config.Save(path, initial); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := db.Open(initial.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureProfile(ctx, initial.App.Profile); err != nil {
+		t.Fatal(err)
+	}
+	bridgeRouter := router.New(initial, store, nil)
+	defer bridgeRouter.Stop(context.Background())
+	holder := newRunConfigHolder(initial)
+	manager := newRunConfigManager(path, "", holder, bridgeRouter, store, nil, nil)
+	var logs strings.Builder
+	handler := &runConfigRefreshingHandler{
+		manager: manager,
+		next:    bridgeRouter,
+		logf: func(format string, args ...any) {
+			fmt.Fprintf(&logs, format, args...)
+		},
+	}
+	if err := os.WriteFile(path, []byte("[[groups]\ninvalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := handler.Handle(ctx, types.IncomingMessage{
+		ID:        "last-known-good-message",
+		ChatID:    "mrf-1@g.us",
+		ChatType:  types.ChatTypeGroup,
+		SenderID:  "owner@lid",
+		Text:      "status?",
+		Timestamp: time.Now(),
+	})
+	if result.Ignored {
+		t.Fatalf("last-known-good group was ignored after reload error: %+v", result)
+	}
+	if !strings.Contains(logs.String(), "retaining current usable config") {
+		t.Fatalf("reload error log = %q", logs.String())
+	}
+	if loaded := holder.Load(); len(loaded.Groups) != 1 || loaded.Groups[0].Alias != "mrf-1" {
+		t.Fatalf("invalid reload replaced live config: %+v", loaded.Groups)
+	}
+}
+
+func TestRunConfigManagerLifecyclePreservesDiskReload(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	initial := config.Default()
+	initial.App.Profile = "test"
+	initial.App.DatabasePath = filepath.Join(dir, "coderoam.sqlite3")
+	initial.Transport.Type = "fake"
+	initial.Groups = []config.GroupConfig{{
+		ID:              "mrf-1@g.us",
+		Alias:           "mrf-1",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "mrf-1",
+		Enabled:         true,
+		RelayManaged:    true,
+	}}
+	if err := config.Save(path, initial); err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.Open(initial.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureProfile(ctx, initial.App.Profile); err != nil {
+		t.Fatal(err)
+	}
+	bridgeRouter := router.New(initial, store, nil)
+	defer bridgeRouter.Stop(context.Background())
+	holder := newRunConfigHolder(initial)
+	manager := newRunConfigManager(path, "", holder, bridgeRouter, store, nil, nil)
+
+	updated := initial
+	updated.Groups = append(updated.Groups, config.GroupConfig{
+		ID:              "mrf-5@g.us",
+		Alias:           "mrf-5",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "mrf-5",
+		Enabled:         true,
+		RelayManaged:    true,
+	})
+	if err := config.Save(path, updated); err != nil {
+		t.Fatal(err)
+	}
+	archived, err := manager.HandleRelayGroupLifecycleEvent(ctx, types.GroupEvent{
+		ChatID:             "mrf-1@g.us",
+		SenderID:           "owner@lid",
+		LeftParticipantIDs: []string{"owner@lid"},
+		ParticipantCount:   2,
+		Timestamp:          time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !archived {
+		t.Fatal("expected mrf-1 to be archived")
+	}
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Groups) != 2 {
+		t.Fatalf("groups after reload plus lifecycle event = %+v", loaded.Groups)
+	}
+	if !loaded.Groups[0].Archived || loaded.Groups[0].Enabled {
+		t.Fatalf("mrf-1 was not archived: %+v", loaded.Groups[0])
+	}
+	if loaded.Groups[1].Alias != "mrf-5" || !loaded.Groups[1].Enabled || loaded.Groups[1].Archived {
+		t.Fatalf("disk-reloaded mrf-5 group was lost: %+v", loaded.Groups[1])
+	}
+}
+
+func TestRunConfigManagerRetriesLifecycleEventAfterInvalidConfig(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	initial := config.Default()
+	initial.App.Profile = "test"
+	initial.App.DatabasePath = filepath.Join(dir, "coderoam.sqlite3")
+	initial.Transport.Type = "fake"
+	initial.Groups = []config.GroupConfig{{
+		ID:              "mrf-1@g.us",
+		Alias:           "mrf-1",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "mrf-1",
+		Enabled:         true,
+		RelayManaged:    true,
+	}}
+	if err := config.Save(path, initial); err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.Open(initial.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureProfile(ctx, initial.App.Profile); err != nil {
+		t.Fatal(err)
+	}
+	bridgeRouter := router.New(initial, store, nil)
+	defer bridgeRouter.Stop(context.Background())
+	holder := newRunConfigHolder(initial)
+	manager := newRunConfigManager(path, "", holder, bridgeRouter, store, nil, nil)
+	if err := os.WriteFile(path, []byte("[[groups]\ninvalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	archived, err := manager.HandleRelayGroupLifecycleEvent(ctx, types.GroupEvent{
+		ChatID:             "mrf-1@g.us",
+		SenderID:           "owner@lid",
+		LeftParticipantIDs: []string{"owner@lid"},
+		ParticipantCount:   2,
+		Timestamp:          time.Now(),
+	})
+	if err == nil || archived {
+		t.Fatalf("invalid config lifecycle result archived=%t err=%v", archived, err)
+	}
+	if len(manager.pendingLifecycle) != 1 {
+		t.Fatalf("pending lifecycle events = %+v", manager.pendingLifecycle)
+	}
+	if err := config.Save(path, initial); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manager.pendingLifecycle) != 0 {
+		t.Fatalf("pending lifecycle event was not drained: %+v", manager.pendingLifecycle)
+	}
+	if len(loaded.Groups) != 1 || !loaded.Groups[0].Archived || loaded.Groups[0].Enabled {
+		t.Fatalf("queued lifecycle event was not applied: %+v", loaded.Groups)
+	}
+}
+
+type retryingRunConfigTarget struct {
+	setCount       int
+	scheduleCount  int
+	failSchedules  int
+	lastConfigured config.Config
+}
+
+func (t *retryingRunConfigTarget) SetConfig(cfg config.Config) {
+	t.setCount++
+	t.lastConfigured = cfg
+}
+
+func (t *retryingRunConfigTarget) ScheduleUnreadActiveFallbacks(context.Context, *config.Config, int) (int, error) {
+	t.scheduleCount++
+	if t.failSchedules > 0 {
+		t.failSchedules--
+		return 0, fmt.Errorf("injected schedule failure")
+	}
+	return 0, nil
+}
+
+func TestRunConfigManagerRetriesPostPublishReconciliation(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	initial := config.Default()
+	initial.App.Profile = "test"
+	initial.App.DatabasePath = filepath.Join(dir, "coderoam.sqlite3")
+	initial.Transport.Type = "fake"
+	if err := config.Save(path, initial); err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.Open(initial.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureProfile(ctx, initial.App.Profile); err != nil {
+		t.Fatal(err)
+	}
+	holder := newRunConfigHolder(initial)
+	target := &retryingRunConfigTarget{failSchedules: 1}
+	manager := newRunConfigManager(path, "", holder, target, store, nil, nil)
+	updated := initial
+	updated.Active.AckMode = "verbose"
+	if err := config.Save(path, updated); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := manager.Refresh(ctx)
+	if err == nil || !changed {
+		t.Fatalf("first refresh changed=%t err=%v", changed, err)
+	}
+	if !manager.reconcilePending || holder.Load().Active.AckMode != "verbose" || target.setCount != 1 {
+		t.Fatalf("post-publish state pending=%t holder=%q set_count=%d", manager.reconcilePending, holder.Load().Active.AckMode, target.setCount)
+	}
+	changed, err = manager.Refresh(ctx)
+	if err != nil || changed {
+		t.Fatalf("reconciliation retry changed=%t err=%v", changed, err)
+	}
+	if manager.reconcilePending || target.scheduleCount != 2 || target.setCount != 1 {
+		t.Fatalf("reconciliation retry pending=%t schedules=%d sets=%d", manager.reconcilePending, target.scheduleCount, target.setCount)
+	}
+}
+
+func TestRunConfigManagerDoesNotPublishBeforeBindingReconciliation(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	initial := config.Default()
+	initial.App.Profile = "test"
+	initial.App.DatabasePath = filepath.Join(dir, "coderoam.sqlite3")
+	initial.Transport.Type = "fake"
+	if err := config.Save(path, initial); err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.Open(initial.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.EnsureProfile(ctx, initial.App.Profile); err != nil {
+		t.Fatal(err)
+	}
+	holder := newRunConfigHolder(initial)
+	target := &retryingRunConfigTarget{}
+	manager := newRunConfigManager(path, "", holder, target, store, nil, nil)
+	updated := initial
+	updated.Groups = []config.GroupConfig{{
+		ID:              "mrf-1@g.us",
+		Alias:           "mrf-1",
+		Mode:            config.GroupModeActiveSession,
+		ActiveSessionID: "mrf-1",
+		Enabled:         true,
+	}}
+	if err := config.Save(path, updated); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := manager.Refresh(ctx)
+	if err == nil || changed {
+		t.Fatalf("failed reconciliation refresh changed=%t err=%v", changed, err)
+	}
+	if len(holder.Load().Groups) != 0 || target.setCount != 0 {
+		t.Fatalf("unreconciled config was published: groups=%+v set_count=%d", holder.Load().Groups, target.setCount)
+	}
+}
+
+func TestRunConfigManagerAppliesRuntimeProfileOverride(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	diskConfig := config.Default()
+	diskConfig.App.Profile = "disk-profile"
+	diskConfig.App.DatabasePath = filepath.Join(dir, "coderoam.sqlite3")
+	diskConfig.Transport.Type = "fake"
+	if err := config.Save(path, diskConfig); err != nil {
+		t.Fatal(err)
+	}
+	runtimeConfig := diskConfig
+	runtimeConfig.App.Profile = "runtime-profile"
+	store, err := db.Open(runtimeConfig.App.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureProfile(ctx, runtimeConfig.App.Profile); err != nil {
+		t.Fatal(err)
+	}
+	holder := newRunConfigHolder(runtimeConfig)
+	target := &retryingRunConfigTarget{}
+	manager := newRunConfigManager(path, "runtime-profile", holder, target, store, nil, nil)
+	updated := diskConfig
+	updated.Active.AckMode = "verbose"
+	if err := config.Save(path, updated); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := manager.Refresh(ctx)
+	if err != nil || !changed {
+		t.Fatalf("profile override refresh changed=%t err=%v", changed, err)
+	}
+	loaded := holder.Load()
+	if loaded.App.Profile != "runtime-profile" || loaded.Active.AckMode != "verbose" {
+		t.Fatalf("runtime config after reload = %+v", loaded)
 	}
 }
 
