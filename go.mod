@@ -9,7 +9,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	go.mau.fi/whatsmeow v0.0.0-20260611094716-089932318bc2
 	golang.org/x/sys v0.46.0
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/protobuf v1.36.12
 	modernc.org/sqlite v1.52.0
 )
 
