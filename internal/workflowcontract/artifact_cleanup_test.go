@@ -28,6 +28,7 @@ func TestArtifactCleanupContract(t *testing.T) {
 		"types: [completed]",
 		"workflow_run.conclusion == 'success'",
 		"/actions/runs/${RUN_ID}/artifacts?per_page=100",
+		"group: actions-artifact-cleanup",
 		"--jq '.artifacts[].id' >\"${ids_file}\"",
 	} {
 		if !strings.Contains(cleanup, contract) {
@@ -37,6 +38,9 @@ func TestArtifactCleanupContract(t *testing.T) {
 	if strings.Count(cleanup, "ids_file=\"$(mktemp)\"") != 2 ||
 		strings.Count(cleanup, "trap 'rm -f \"${ids_file}\"' EXIT") != 2 {
 		t.Fatal("every artifact deletion must snapshot all pages before deleting")
+	}
+	if strings.Contains(cleanup, "github.run_id") {
+		t.Fatal("cleanup runs must share a fixed concurrency group")
 	}
 
 	parts := strings.Split(cleanup, "  delete-stale-artifacts:")
