@@ -184,6 +184,7 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.zip
+          retention-days: 1
           if-no-files-found: error
 
   sbom:
@@ -222,6 +223,7 @@ jobs:
           name: coderoam-sbom
           path: coderoam_*_sbom.cdx.json
           if-no-files-found: error
+          retention-days: 1
 
   publish:
     name: Publish release bundle
@@ -298,6 +300,7 @@ jobs:
           name: coderoam-release-bundle
           path: dist/release/*
           if-no-files-found: error
+          retention-days: 1
 
       - name: Create GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
