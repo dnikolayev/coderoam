@@ -29,6 +29,7 @@ func TestArtifactCleanupContract(t *testing.T) {
 		"workflow_run.conclusion == 'success'",
 		"/actions/runs/${RUN_ID}/artifacts?per_page=100",
 		"group: actions-artifact-cleanup",
+		"queue: max",
 		"--jq '.artifacts[].id' >\"${ids_file}\"",
 	} {
 		if !strings.Contains(cleanup, contract) {
